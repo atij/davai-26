@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-adoreme: #7F77DD;
+  --color-brand-vs: #1D9E75;
+  
+  --color-provider-claude: #AFA9EC;
+  --color-provider-chatgpt: #5DCAA5;
+  --color-provider-perplexity: #EF9F27;
+  --color-provider-gemini: #F0997B;
+
+  --color-sentiment-positive: #5DCAA5;
+  --color-sentiment-neutral: #B4B2A9;
+  --color-sentiment-negative: #F09595;
+
+  --color-category-purchase-bg: #EEEDFE;
+  --color-category-purchase-text: #3C3489;
+  --color-category-discovery-bg: #E1F5EE;
+  --color-category-discovery-text: #085041;
+  --color-category-comparison-bg: #FAEEDA;
+  --color-category-comparison-text: #633806;
+  --color-category-fit-bg: #FAECE7;
+  --color-category-fit-text: #712B13;
+  --color-category-gifting-bg: #E6F1FB;
+  --color-category-gifting-text: #0C447C;
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Hide Next.js dev indicator/portal */
+.devtools-indicator,
+[class*="devtools-indicator"],
+[data-nextjs-toast], 
+[data-nextjs-dialog-overlay], 
+#nextjs-portal,
+div[class*="nextjs-static-indicator"],
+div[class*="next-route-announcer"],
+div[style*="z-index: 9999"],
+div[style*="z-index:9999"],
+div[style*="z-index: 10000"],
+div[style*="position: fixed"][style*="bottom:"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

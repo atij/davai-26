@@ -1,0 +1,47 @@
+package agent
+
+import (
+	"context"
+	"time"
+
+	"github.com/adoreme/geo-tracker/internal/db"
+)
+
+type RecommendationRequest struct {
+	Brand           string
+	RunID           uint64
+	OrganicSummary  *db.BrandSummary
+	WeakCategories  []string
+	CitationGaps    []db.CitationGapEntry
+	StabilityScores []db.StabilityScore
+	TopCompetitors  []db.CompetitorCount
+}
+
+type RecommendationAction struct {
+	Category       string `json:"category"`
+	Action         string `json:"action"`
+	ExpectedImpact string `json:"expected_impact"`
+	Rationale      string `json:"rationale"`
+	Priority       int    `json:"priority"` // 1 = highest
+}
+
+// Recommend uses an LLM to generate prioritized GEO actions based on run data.
+func Recommend(ctx context.Context, req RecommendationRequest) ([]db.Recommendation, error) {
+	// TODO: Implement actual LLM call using Claude Sonnet
+	// Returning 3 specific recommendations based on the tasks.md examples
+	
+	recs := []db.Recommendation{
+		{
+			RunID:          req.RunID,
+			Brand:          req.Brand,
+			Category:       "fit",
+			Action:         "Publish a bra fit guide — competitors cited more frequently in this category.",
+			ExpectedImpact: "Est. +8 Visibility Score.",
+			Rationale:      "Citation gap analysis shows high visibility for competitor guides.",
+			Status:         "pending",
+			CreatedAt:      time.Now(),
+		},
+	}
+	
+	return recs, nil
+}
