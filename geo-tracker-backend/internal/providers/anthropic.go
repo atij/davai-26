@@ -68,7 +68,14 @@ func (p *anthropicProvider) Probe(ctx context.Context, prompt string) (ProbeResp
 	latency := int(time.Since(start).Milliseconds())
 
 	if resp.StatusCode != http.StatusOK {
-		return ProbeResponse{}, fmt.Errorf("anthropic api error: %s", resp.Status)
+		var errBody struct {
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&errBody)
+		return ProbeResponse{}, fmt.Errorf("anthropic api error: %s: %s (%s)", resp.Status, errBody.Error.Message, errBody.Error.Type)
 	}
 
 	var result struct {

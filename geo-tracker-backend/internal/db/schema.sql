@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS runs (
     prompt_set_id   BIGINT UNSIGNED,
     started_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at     DATETIME,
+    duration_seconds INT NULL,
     prompt_count    INT NOT NULL DEFAULT 0,
     brand_count     INT NOT NULL DEFAULT 0,
     sample_count    INT NOT NULL DEFAULT 1,
@@ -73,10 +74,37 @@ CREATE TABLE IF NOT EXISTS stability_scores (
     INDEX idx_stability_run (run_id, brand)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS visibility_scores (
+    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    run_id            BIGINT UNSIGNED NOT NULL,
+    brand             VARCHAR(255) NOT NULL,
+    score             DECIMAL(6,2) NOT NULL DEFAULT 0,
+    mention_rate      DECIMAL(6,2) NOT NULL DEFAULT 0,
+    first_rec_rate    DECIMAL(6,2) NOT NULL DEFAULT 0,
+    sentiment_score   DECIMAL(5,3) NOT NULL DEFAULT 0,
+    citation_score    DECIMAL(6,2) NOT NULL DEFAULT 0,
+    stability_score   DECIMAL(6,2) NOT NULL DEFAULT 0,
+    provider_coverage DECIMAL(6,2) NOT NULL DEFAULT 0,
+    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_brand_run (brand, run_id),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS explanations (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    run_id      BIGINT UNSIGNED NOT NULL,
+    brand       VARCHAR(255) NOT NULL,
+    summary     TEXT NOT NULL,
+    drivers     JSON NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_run_brand (run_id, brand)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS recommendations (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     run_id          BIGINT UNSIGNED NOT NULL,
     brand           VARCHAR(128) NOT NULL,
+    priority        INT NOT NULL DEFAULT 1,
     category        VARCHAR(64),
     action          TEXT NOT NULL,
     expected_impact TEXT,

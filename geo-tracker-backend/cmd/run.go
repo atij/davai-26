@@ -88,6 +88,7 @@ var runCmd = &cobra.Command{
 			BrandCount:  len(brands),
 			SampleCount: samples,
 			Status:      "running",
+			StartedAt:   time.Now(),
 		}
 
 		if !dryRun {
@@ -139,6 +140,31 @@ var runCmd = &cobra.Command{
 				}
 			}
 
+			// 3. Calculate and persist visibility scores (organic only, per brand)
+			for _, b := range brands {
+				var brandResults []db.Result
+				for _, r := range results {
+					if r.Brand == b && r.Category != "comparison" {
+						brandResults = append(brandResults, r)
+					}
+				}
+				stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
+				vScore := scoring.CalcVisibilityScore(b, int64(run.ID), brandResults, stabilityScores)
+				if err := resultRepo.InsertVisibilityScore(&db.VisibilityScoreRow{
+					RunID:            run.ID,
+					Brand:            b,
+					Score:            vScore.Score,
+					MentionRate:      vScore.MentionRate,
+					FirstRecRate:     vScore.FirstRecRate,
+					SentimentScore:   vScore.SentimentScore,
+					CitationScore:    vScore.CitationScore,
+					StabilityScore:   vScore.StabilityScore,
+					ProviderCoverage: vScore.ProviderCoverage,
+				}); err != nil {
+					logger.Error("failed to insert visibility score", zap.String("brand", b), zap.Error(err))
+				}
+			}
+
 			// 2. Explainer & Recommender (Simplified placeholders as per agent code)
 			// In real implementation, we'd fetch previous run, calculate diffs, etc.
 			for _, b := range brands {
@@ -150,13 +176,38 @@ var runCmd = &cobra.Command{
 				agent.Explain(context.Background(), explainReq)
 
 				// Recommend
+				organicSummary, _ := resultRepo.GetBrandSummary(b)
+				citationGaps, _ := resultRepo.GetCitationGap(b, run.ID)
+				stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
+				competitors, _ := resultRepo.GetTopCompetitors(b, 5)
+
 				recReq := agent.RecommendationRequest{
-					Brand: b,
-					RunID: run.ID,
+					Brand:           b,
+					RunID:           run.ID,
+					OrganicSummary:  organicSummary,
+					CitationGaps:    citationGaps,
+					StabilityScores: stabilityScores,
+					TopCompetitors:  competitors,
 				}
-				recs, _ := agent.Recommend(context.Background(), recReq)
-				for _, rec := range recs {
-					resultRepo.InsertRecommendation(&rec)
+				recs, err := agent.Recommend(context.Background(), recReq)
+				if err != nil {
+					logger.Error("recommender failed", zap.String("brand", b), zap.Error(err))
+					continue
+				}
+				for i := range recs {
+					rec := &db.Recommendation{
+						RunID:          run.ID,
+						Brand:          b,
+						Priority:       recs[i].Priority,
+						Category:       recs[i].Category,
+						Action:         recs[i].Action,
+						ExpectedImpact: recs[i].ExpectedImpact,
+						Rationale:      recs[i].Rationale,
+						Status:         "pending",
+					}
+					if err := resultRepo.InsertRecommendation(rec); err != nil {
+						logger.Error("failed to insert recommendation", zap.Error(err))
+					}
 				}
 			}
 
@@ -216,8 +267,21 @@ func printFancySummary(runID uint64, prompts []db.Prompt, providersList []provid
 		// Stability scores for this brand
 		// (Simplified calculation for summary display)
 		var brandStability []db.StabilityScore
-		// ... logic to aggregate ...
-		
+		for _, pr := range providersList {
+			for _, p := range prompts {
+				var promptSamples []db.Result
+				for _, r := range brandResults {
+					if r.Provider == pr.Name() && r.PromptID == p.ID {
+						promptSamples = append(promptSamples, r)
+					}
+				}
+				if len(promptSamples) > 0 {
+					score := scoring.CalcStabilityScore(promptSamples)
+					brandStability = append(brandStability, score)
+				}
+			}
+		}
+
 		vScore := scoring.CalcVisibilityScore(b, int64(runID), brandResults, brandStability)
 
 		for _, p := range providersList {

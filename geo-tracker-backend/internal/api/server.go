@@ -55,6 +55,7 @@ func StartServer(ctx context.Context, cfg config.ServeConfig, database *sqlx.DB,
 		r.Get("/brands/{brand}/trend", h.GetBrandTrend)
 		r.Get("/brands/{brand}/stability", h.GetBrandStability)
 		r.Get("/brands/{brand}/citation-gap", h.GetCitationGap)
+		r.Get("/explain/{run_id}", h.GetExplain)
 		r.Get("/compare", h.GetCompare)
 		r.Get("/competitors", h.GetCompetitors)
 		r.Get("/recommendations", h.GetRecommendations)

@@ -112,21 +112,49 @@ func (r *ResultRepo) InsertResult(res *Result) error {
 	return err
 }
 
+type ExplanationRow struct {
+	ID        uint64          `db:"id"         json:"id"`
+	RunID     uint64          `db:"run_id"      json:"run_id"`
+	Brand     string          `db:"brand"       json:"brand"`
+	Summary   string          `db:"summary"     json:"summary"`
+	Drivers   []string        `db:"drivers"     json:"drivers"`
+	CreatedAt time.Time       `db:"created_at"  json:"created_at"`
+}
+
+type explanationDB struct {
+	ExplanationRow
+	DriversJSON json.RawMessage `db:"drivers"`
+}
+
+func (r *ResultRepo) GetExplanation(runID uint64, brand string) (*ExplanationRow, error) {
+	var row explanationDB
+	err := r.db.Get(&row, "SELECT * FROM explanations WHERE run_id = ? AND brand = ?", runID, brand)
+	if err != nil {
+		return nil, err
+	}
+	res := row.ExplanationRow
+	if len(row.DriversJSON) > 0 {
+		json.Unmarshal(row.DriversJSON, &res.Drivers)
+	}
+	return &res, nil
+}
+
 type Run struct {
-	ID            uint64     `db:"id" json:"id"`
-	PromptSetID   *uint64    `db:"prompt_set_id" json:"prompt_set_id"`
-	StartedAt     time.Time  `db:"started_at" json:"started_at"`
-	FinishedAt    *time.Time `db:"finished_at" json:"finished_at"`
-	PromptCount   int        `db:"prompt_count" json:"prompt_count"`
-	BrandCount    int        `db:"brand_count" json:"brand_count"`
-	SampleCount   int        `db:"sample_count" json:"sample_count"`
-	Status        string     `db:"status" json:"status"`
-	TotalCostUSD  float64    `db:"total_cost_usd" json:"total_cost_usd"`
+	ID              uint64     `db:"id" json:"id"`
+	PromptSetID     *uint64    `db:"prompt_set_id" json:"prompt_set_id"`
+	StartedAt       time.Time  `db:"started_at" json:"started_at"`
+	FinishedAt      *time.Time `db:"finished_at" json:"finished_at"`
+	DurationSeconds *int       `db:"duration_seconds" json:"duration_seconds"`
+	PromptCount     int        `db:"prompt_count" json:"prompt_count"`
+	BrandCount      int        `db:"brand_count" json:"brand_count"`
+	SampleCount     int        `db:"sample_count" json:"sample_count"`
+	Status          string     `db:"status" json:"status"`
+	TotalCostUSD    float64    `db:"total_cost_usd" json:"total_cost_usd"`
 }
 
 func (r *ResultRepo) CreateRun(run *Run) error {
-	query := `INSERT INTO runs (prompt_set_id, prompt_count, brand_count, sample_count, status) 
-	          VALUES (:prompt_set_id, :prompt_count, :brand_count, :sample_count, :status)`
+	query := `INSERT INTO runs (prompt_set_id, prompt_count, brand_count, sample_count, status, started_at) 
+	          VALUES (:prompt_set_id, :prompt_count, :brand_count, :sample_count, :status, :started_at)`
 	res, err := r.db.NamedExec(query, run)
 	if err != nil {
 		return err
@@ -139,7 +167,13 @@ func (r *ResultRepo) CreateRun(run *Run) error {
 }
 
 func (r *ResultRepo) UpdateRunStatus(id uint64, status string, totalCost float64) error {
-	_, err := r.db.Exec("UPDATE runs SET status = ?, finished_at = NOW(), total_cost_usd = ? WHERE id = ?", status, totalCost, id)
+	_, err := r.db.Exec(`
+		UPDATE runs 
+		SET status = ?, 
+			finished_at = NOW(), 
+			total_cost_usd = ?, 
+			duration_seconds = TIMESTAMPDIFF(SECOND, started_at, NOW()) 
+		WHERE id = ?`, status, totalCost, id)
 	return err
 }
 
@@ -207,20 +241,25 @@ func (r *ResultRepo) GetPromptResults(promptID uint64) ([]Result, error) {
 }
 
 type BrandSummary struct {
-	Brand              string  `db:"brand" json:"brand"`
-	MentionRate        float64 `db:"mention_rate" json:"mention_rate"`
-	AvgRecommendation  float64 `db:"avg_recommendation" json:"avg_recommendation"`
-	SentimentPositive  float64 `db:"sentiment_positive" json:"sentiment_positive"`
-	SentimentNeutral   float64 `db:"sentiment_neutral" json:"sentiment_neutral"`
-	SentimentNegative  float64 `db:"sentiment_negative" json:"sentiment_negative"`
-	// Additional fields for frontend BrandSummary
-	SentimentScore     float64            `json:"sentiment_score"`
+	Brand            string             `db:"brand" json:"brand"`
+	PromptType       string             `db:"-" json:"prompt_type"`
+	RunID            uint64             `db:"-" json:"run_id"`
+	RunAt            time.Time          `db:"-" json:"run_at"`
+	VisibilityScore  float64            `db:"-" json:"visibility_score"`
+	MentionRate      float64            `db:"mention_rate" json:"mention_rate"`
+	FirstRecRate     float64            `db:"-" json:"first_rec_rate"`
+	AvgRecommendation float64           `db:"avg_recommendation" json:"avg_recommendation"`
+	SentimentPositive float64           `db:"sentiment_positive" json:"sentiment_positive"`
+	SentimentNeutral  float64           `db:"sentiment_neutral" json:"sentiment_neutral"`
+	SentimentNegative float64           `db:"sentiment_negative" json:"sentiment_negative"`
+	SentimentScore    float64           `db:"-" json:"sentiment_score"`
+	CitationScore     float64           `db:"-" json:"citation_score"`
+	StabilityScore    float64           `db:"-" json:"stability_score"`
+	ProviderCoverage  float64           `db:"-" json:"provider_coverage"`
 	SentimentBreakdown SentimentBreakdown `json:"sentiment_breakdown"`
 	ProviderRates      map[string]float64 `json:"provider_rates"`
 	TopProvider        string             `json:"top_provider"`
 	WeakestProvider    string             `json:"weakest_provider"`
-	RunID              uint64             `json:"run_id"`
-	RunAt              time.Time          `json:"run_at"`
 }
 
 type SentimentBreakdown struct {
@@ -402,6 +441,45 @@ type StabilityScore struct {
 	StabilityScore float64 `db:"stability_score" json:"stability_score"`
 }
 
+type VisibilityScoreRow struct {
+	ID               uint64    `db:"id"                json:"id"`
+	RunID            uint64    `db:"run_id"             json:"run_id"`
+	Brand            string    `db:"brand"              json:"brand"`
+	Score            float64   `db:"score"              json:"score"`
+	MentionRate      float64   `db:"mention_rate"       json:"mention_rate"`
+	FirstRecRate     float64   `db:"first_rec_rate"     json:"first_rec_rate"`
+	SentimentScore   float64   `db:"sentiment_score"    json:"sentiment_score"`
+	CitationScore    float64   `db:"citation_score"     json:"citation_score"`
+	StabilityScore   float64   `db:"stability_score"    json:"stability_score"`
+	ProviderCoverage float64   `db:"provider_coverage"  json:"provider_coverage"`
+	CreatedAt        time.Time `db:"created_at"         json:"created_at"`
+}
+
+func (r *ResultRepo) InsertVisibilityScore(v *VisibilityScoreRow) error {
+	q := `INSERT INTO visibility_scores
+        (run_id, brand, score, mention_rate, first_rec_rate, sentiment_score,
+         citation_score, stability_score, provider_coverage)
+        VALUES (:run_id, :brand, :score, :mention_rate, :first_rec_rate, :sentiment_score,
+         :citation_score, :stability_score, :provider_coverage)`
+	_, err := r.db.NamedExec(q, v)
+	return err
+}
+
+func (r *ResultRepo) GetLatestVisibilityScore(brand string) (*VisibilityScoreRow, error) {
+	var v VisibilityScoreRow
+	err := r.db.Get(&v, `
+        SELECT vs.*
+        FROM visibility_scores vs
+        JOIN runs ON vs.run_id = runs.id
+        WHERE vs.brand = ? AND runs.status = 'done'
+        ORDER BY runs.started_at DESC
+        LIMIT 1`, brand)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
 func (r *ResultRepo) InsertStabilityScore(s *StabilityScore) error {
 	query := `INSERT INTO stability_scores (
 		run_id, prompt_id, provider, brand, sample_count, mention_rate, rank_variance, stability_score
@@ -422,6 +500,7 @@ type Recommendation struct {
 	ID             uint64     `db:"id" json:"id"`
 	RunID          uint64     `db:"run_id" json:"run_id"`
 	Brand          string     `db:"brand" json:"brand"`
+	Priority       int        `db:"priority" json:"priority"`
 	Category       string     `db:"category" json:"category"`
 	Action         string     `db:"action" json:"action"`
 	ExpectedImpact string     `db:"expected_impact" json:"expected_impact"`
@@ -433,9 +512,9 @@ type Recommendation struct {
 
 func (r *ResultRepo) InsertRecommendation(rec *Recommendation) error {
 	query := `INSERT INTO recommendations (
-		run_id, brand, category, action, expected_impact, rationale, status
+		run_id, brand, priority, category, action, expected_impact, rationale, status
 	) VALUES (
-		:run_id, :brand, :category, :action, :expected_impact, :rationale, :status
+		:run_id, :brand, :priority, :category, :action, :expected_impact, :rationale, :status
 	)`
 	_, err := r.db.NamedExec(query, rec)
 	return err

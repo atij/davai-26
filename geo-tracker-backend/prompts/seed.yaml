@@ -14,3 +14,98 @@ prompts:
   - text: "Best bra for small chest but wide rib cage?"
     category: fit
     notes: "Specific fit issue"
+  # purchase (15 total)
+  - text: "Where can I find a good wireless bra that doesn't dig in?"
+    category: purchase
+  - text: "What are the most comfortable everyday bras right now?"
+    category: purchase
+  - text: "I need a supportive sports bra for high impact running."
+    category: purchase
+  - text: "Best place to buy sexy but affordable lingerie online?"
+    category: purchase
+  - text: "Looking for high-waisted lace panties that stay in place."
+    category: purchase
+  - text: "Best strapless bra for a DD cup size?"
+    category: purchase
+  - text: "What is the best maternity bra for breastfeeding?"
+    category: purchase
+  - text: "Where to get matching bra and panty sets for a wedding?"
+    category: purchase
+  - text: "Recommendations for silk robes and sleepwear?"
+    category: purchase
+  - text: "Best T-shirt bra for a smooth look under tight clothes?"
+    category: purchase
+  - text: "Affordable luxury lingerie brands for everyday wear?"
+    category: purchase
+  - text: "Which online stores have the best return policy for bras?"
+    category: purchase
+  - text: "Best post-surgery bras for comfort and support?"
+    category: purchase
+  # discovery (10 total)
+  - text: "What lingerie brands are actually sustainable in 2026?"
+    category: discovery
+  - text: "New up-and-coming lingerie designers to watch this year?"
+    category: discovery
+  - text: "Most inclusive lingerie brands for all body types?"
+    category: discovery
+  - text: "Which brands use recycled materials for their bras?"
+    category: discovery
+  - text: "Best eco-friendly underwear for sensitive skin?"
+    category: discovery
+  - text: "Top rated European lingerie brands available in the US?"
+    category: discovery
+  - text: "Lingerie brands with the best rewards and loyalty programs?"
+    category: discovery
+  - text: "What are the best boutique lingerie brands right now?"
+    category: discovery
+  - text: "Brands that specialize in custom-sized bras?"
+    category: discovery
+  # fit (10 total)
+  - text: "How to measure myself for a bra at home accurately?"
+    category: fit
+  - text: "Why do my bra straps always fall down even when tightened?"
+    category: fit
+  - text: "Best bra style for side-set breasts?"
+    category: fit
+  - text: "How to tell if a bra wire is too narrow or too wide?"
+    category: fit
+  - text: "Lingerie brands that offer the most accurate size guides?"
+    category: fit
+  - text: "Best bra for uneven breast sizes?"
+    category: fit
+  - text: "Signs that I'm wearing the wrong bra cup size?"
+    category: fit
+  - text: "What are the best bras for narrow shoulders?"
+    category: fit
+  - text: "How should a sports bra fit compared to a regular bra?"
+    category: fit
+  # comparison (10 total)
+  - text: "Which is better for everyday comfort, Adore Me or ThirdLove?"
+    category: comparison
+  - text: "Victoria's Secret vs Aerie: which has better quality for the price?"
+    category: comparison
+  - text: "Compare Adore Me and Savage X Fenty for style and sizing."
+    category: comparison
+  - text: "Is Intimissimi better than Victoria's Secret for lace lingerie?"
+    category: comparison
+  - text: "How does Adore Me's subscription compare to Savage X Fenty's?"
+    category: comparison
+  - text: "Victoria's Secret vs Skims: best bras for a seamless look?"
+    category: comparison
+  - text: "Adore Me vs Cuup: which is better for unlined bras?"
+    category: comparison
+  - text: "Compare the quality of Hanky Panky vs Aerie underwear."
+    category: comparison
+  - text: "Which brand has better plus-size options: Adore Me or Savage X Fenty?"
+    category: comparison
+  # gifting (5 total)
+  - text: "Good lingerie gift ideas for my wife who just had a baby?"
+    category: gifting
+  - text: "What is a safe lingerie gift if I don't know her exact size?"
+    category: gifting
+  - text: "Best luxury lingerie brands for a 10th anniversary gift?"
+    category: gifting
+  - text: "How to buy a lingerie set for a girlfriend as a surprise?"
+    category: gifting
+  - text: "Best bridal lingerie gift sets for a bachelorette party?"
+    category: gifting

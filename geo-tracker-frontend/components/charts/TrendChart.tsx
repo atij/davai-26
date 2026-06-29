@@ -21,6 +21,20 @@ interface TrendChartProps {
 }
 
 export const TrendChart: React.FC<TrendChartProps> = ({ data, brands, height = 300 }) => {
+  if (!data || data.length < 2) {
+    return (
+      <div className="bg-white rounded-3xl border border-slate-200 p-8 flex flex-col items-center justify-center h-64 gap-3">
+        <p className="text-sm font-bold text-slate-900">Mention Trend</p>
+        <p className="text-xs text-slate-400 text-center max-w-48">
+          Trend appears after 2+ runs. Run the pipeline again tomorrow to see movement.
+        </p>
+        {data?.length === 1 && brands[0] && (
+          <p className="text-2xl font-black text-indigo-600">{(data[0][brands[0]] as number).toFixed(1)}%</p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div style={{ width: '100%', height }}>
       <ResponsiveContainer width="100%" height="100%">

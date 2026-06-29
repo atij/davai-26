@@ -44,7 +44,9 @@ export default function RunsPage() {
                        <div className="flex flex-col">
                            <span className="text-sm font-semibold text-slate-700">{formatDate(run.started_at)}</span>
                            <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
-                               <Clock size={10} /> {run.duration_seconds ? `${Math.floor(run.duration_seconds / 60)}m ${run.duration_seconds % 60}s` : 'N/A'}
+                               <Clock size={10} /> {run.duration_seconds ? `${Math.floor(run.duration_seconds / 60)}m ${run.duration_seconds % 60}s` : '—'}
+                               <span className="mx-1">·</span>
+                               {new Date(run.started_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                            </span>
                        </div>
                     </td>

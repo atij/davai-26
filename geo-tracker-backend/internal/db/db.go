@@ -48,3 +48,28 @@ func Migrate(db *sqlx.DB) error {
 	}
 	return nil
 }
+
+func Reset(db *sqlx.DB) error {
+	// 1. Disable foreign key checks
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable fk checks: %w", err)
+	}
+	defer db.Exec("SET FOREIGN_KEY_CHECKS = 1")
+
+	// 2. Get all tables in the current database
+	var tables []string
+	err := db.Select(&tables, "SHOW TABLES")
+	if err != nil {
+		return fmt.Errorf("show tables: %w", err)
+	}
+
+	// 3. Drop all tables
+	for _, table := range tables {
+		if _, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
+			return fmt.Errorf("drop table %s: %w", table, err)
+		}
+	}
+
+	// 4. Run migrations to recreate schema
+	return Migrate(db)
+}

@@ -42,19 +42,20 @@ func (h *Handlers) GetPrompts(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) GetRuns(w http.ResponseWriter, r *http.Request) {
 	type runResponse struct {
-		ID           uint64     `db:"id" json:"id"`
-		StartedAt    time.Time  `db:"started_at" json:"started_at"`
-		FinishedAt   *time.Time `db:"finished_at" json:"finished_at"`
-		PromptCount  int        `db:"prompt_count" json:"prompt_count"`
-		BrandCount   int        `db:"brand_count" json:"brand_count"`
-		SampleCount  int        `db:"sample_count" json:"sample_count"`
-		Status       string     `db:"status" json:"status"`
-		TotalCostUSD *float64   `db:"total_cost_usd" json:"total_cost_usd"`
+		ID              uint64     `db:"id" json:"id"`
+		StartedAt       time.Time  `db:"started_at" json:"started_at"`
+		FinishedAt      *time.Time `db:"finished_at" json:"finished_at"`
+		DurationSeconds *int       `db:"duration_seconds" json:"duration_seconds"`
+		PromptCount     int        `db:"prompt_count" json:"prompt_count"`
+		BrandCount      int        `db:"brand_count" json:"brand_count"`
+		SampleCount     int        `db:"sample_count" json:"sample_count"`
+		Status          string     `db:"status" json:"status"`
+		TotalCostUSD    *float64   `db:"total_cost_usd" json:"total_cost_usd"`
 	}
 	var runs []runResponse
 	err := h.db.Select(&runs, `
 		SELECT 
-			id, started_at, finished_at, prompt_count, brand_count, sample_count, status, total_cost_usd
+			id, started_at, finished_at, duration_seconds, prompt_count, brand_count, sample_count, status, total_cost_usd
 		FROM runs 
 		ORDER BY started_at DESC`)
 	if err != nil {
@@ -99,7 +100,33 @@ func (h *Handlers) GetBrandSummary(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR")
 		return
 	}
+
+	// Fetch stored visibility score (computed by run command, not recomputed here)
+	vscore, err := repo.GetLatestVisibilityScore(brand)
+	if err == nil && vscore != nil {
+		summary.VisibilityScore = vscore.Score
+		summary.FirstRecRate = vscore.FirstRecRate
+		summary.CitationScore = vscore.CitationScore
+		summary.StabilityScore = vscore.StabilityScore
+		summary.ProviderCoverage = vscore.ProviderCoverage
+	}
+
+	summary.PromptType = "organic"
 	sendJSON(w, http.StatusOK, summary)
+}
+
+func (h *Handlers) GetExplain(w http.ResponseWriter, r *http.Request) {
+	runIDStr := chi.URLParam(r, "run_id")
+	runID, _ := strconv.ParseUint(runIDStr, 10, 64)
+	brand := resolveBrand(r.URL.Query().Get("brand"))
+
+	repo := db.NewResultRepo(h.db)
+	explanation, err := repo.GetExplanation(runID, brand)
+	if err != nil {
+		sendError(w, http.StatusNotFound, "no explanation found", "NOT_FOUND")
+		return
+	}
+	sendJSON(w, http.StatusOK, explanation)
 }
 
 func (h *Handlers) GetBrandTrend(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +288,7 @@ func resolveBrand(brandRaw string) string {
 	if lower == "adoreme" || lower == "adore me" {
 		return "Adore Me"
 	}
-	if lower == "vs" || lower == "victoria's secret" || lower == "victoria s secret" || strings.Contains(lower, "victoria") {
+	if lower == "victorias secret" || lower == "victoria's secret" || lower == "victoria secret" || lower == "vs" || strings.Contains(lower, "victoria") {
 		return "Victoria's Secret"
 	}
 	return brandRaw

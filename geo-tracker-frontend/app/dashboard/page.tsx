@@ -11,6 +11,9 @@ import { CompetitorBars } from "@/components/charts/CompetitorBars"
 import { SentimentDonut } from "@/components/charts/SentimentDonut"
 import { CitationGapTable } from "@/components/dashboard/CitationGapTable"
 import { PromptResultsTable } from "@/components/dashboard/PromptResultsTable"
+import { ExplainabilityPanel } from "@/components/dashboard/ExplainabilityPanel"
+import { LiveRunButton } from "@/components/dashboard/LiveRunButton"
+import { HeadToHeadSection } from "@/components/dashboard/HeadToHeadSection"
 import { useSummary } from "@/hooks/useSummary"
 import { useTrend } from "@/hooks/useTrend"
 import { useCompetitors } from "@/hooks/useCompetitors"
@@ -30,6 +33,8 @@ function DashboardContent() {
   const { trend, isLoading: trendLoading } = useTrend(brandName)
   const { competitors, isLoading: compLoading } = useCompetitors(brandName)
   const { results, isLoading: resLoading } = useRunDetail(summary?.run_id || 0)
+
+  const latestRunId = summary?.run_id || null
 
   if (sumError) {
     return (
@@ -107,11 +112,20 @@ function DashboardContent() {
           <CitationGapTable brand={brandName} />
         </div>
 
-        <section>
-          <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-6 px-1">Latest Prompt Results</h3>
-          {resLoading ? <Skeleton className="h-64 rounded-3xl" /> : results && <PromptResultsTable results={results as any} />}
-        </section>
+        <div className="mb-8">
+          <section>
+            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-6 px-1">Latest Prompt Results</h3>
+            {resLoading ? <Skeleton className="h-64 rounded-3xl" /> : results && <PromptResultsTable results={results as any} />}
+          </section>
+        </div>
+
+        {latestRunId && (
+          <ExplainabilityPanel brand={brandName} runId={latestRunId} />
+        )}
+
+        <HeadToHeadSection brand={brandName} />
       </PageShell>
+      <LiveRunButton brand={brandName} />
     </>
   )
 }
