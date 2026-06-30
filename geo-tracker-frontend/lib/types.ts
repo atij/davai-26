@@ -126,6 +126,29 @@ export interface LiveRunResult {
   streaming:       boolean
 }
 
+export interface RunTrace {
+  id:          number
+  run_id:      number
+  phase:       string
+  agent_name:  string
+  started_at:  string
+  finished_at: string | null
+  duration_ms: number | null
+  status:      'running' | 'success' | 'error' | 'retried'
+  error_text:  string | null
+}
+
+export type ChatEventType = 'chunk' | 'tool_call' | 'tool_result' | 'done' | 'error'
+
+export interface ChatEvent {
+  type:    ChatEventType
+  text?:   string
+  tool?:   string
+  args?:   any
+  preview?: string
+  error?:  string
+}
+
 // Chart data shapes — shape data to these before passing to chart components
 export type SOVDatum        = { provider: string; rate: number }
 export type TrendDatum      = { run_at: string; [brand: string]: number | string }

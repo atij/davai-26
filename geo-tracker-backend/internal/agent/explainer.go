@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/adoreme/geo-tracker/internal/db"
@@ -32,27 +31,16 @@ type Explanation struct {
 	GeneratedAt time.Time `json:"generated_at"`
 }
 
-// Explain uses an LLM to generate a natural language explanation of changes between runs.
-// In this implementation, we simulate it or call the configured LLM.
-func Explain(ctx context.Context, req ExplainRequest) (Explanation, error) {
-	// TODO: Implement actual LLM call using Claude Sonnet
-	// For now, return a placeholder that matches the expected output shape
-	prevID := uint64(0)
-	if req.PreviousRun != nil {
-		prevID = req.PreviousRun.ID
-	}
-	
-	currentID := uint64(0)
-	if req.CurrentRun != nil {
-		currentID = req.CurrentRun.ID
-	}
+// This is a type alias to avoid circular import if needed, but since adk package
+// will import internal/agent, we can't have internal/agent import adk.
+// Instead, we pass the agent as an interface or a concrete type if we don't mind the dependency.
+// Given the tasks.md, we should use a package alias.
 
-	return Explanation{
-		Summary: fmt.Sprintf("%s visibility changed between run %d and %d.", req.Brand, prevID, currentID),
-		Drivers: []string{
-			"Analysis of competitor shifts",
-			"Changes in citation patterns",
-		},
-		GeneratedAt: time.Now(),
-	}, nil
+// Explain is now a thin delegate.
+func Explain(ctx context.Context, req ExplainRequest, a explainerInterface) (Explanation, error) {
+	return a.Explain(ctx, req)
+}
+
+type explainerInterface interface {
+	Explain(context.Context, ExplainRequest) (Explanation, error)
 }

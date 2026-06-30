@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"github.com/adoreme/geo-tracker/internal/db"
 )
@@ -41,23 +40,11 @@ Each object must have:
 Priority 1 = highest impact. Actions must reference specific data points from the input.
 Never produce generic advice. Every action must name a specific category, competitor, or domain.`
 
-// Recommend uses an LLM to generate prioritized GEO actions based on run data.
-func Recommend(ctx context.Context, req RecommendationRequest) ([]db.Recommendation, error) {
-	// TODO: Implement actual LLM call using Claude Sonnet
-	// Returning 3 specific recommendations based on the tasks.md examples
-	
-	recs := []db.Recommendation{
-		{
-			RunID:          req.RunID,
-			Brand:          req.Brand,
-			Category:       "fit",
-			Action:         "Publish a bra fit guide — competitors cited more frequently in this category.",
-			ExpectedImpact: "Est. +8 Visibility Score.",
-			Rationale:      "Citation gap analysis shows high visibility for competitor guides.",
-			Status:         "pending",
-			CreatedAt:      time.Now(),
-		},
-	}
-	
-	return recs, nil
+// Recommend is now a thin delegate.
+func Recommend(ctx context.Context, req RecommendationRequest, a recommenderInterface) ([]db.Recommendation, error) {
+	return a.Recommend(ctx, req)
+}
+
+type recommenderInterface interface {
+	Recommend(context.Context, RecommendationRequest) ([]db.Recommendation, error)
 }

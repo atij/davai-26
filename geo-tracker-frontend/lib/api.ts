@@ -19,7 +19,14 @@ export const api = {
   explain:             (runId: number, brand: string) => fetch(`${BASE}/api/explain/${runId}?brand=${enc(brand)}`),
   prompts:             ()                        => fetch(`${BASE}/api/prompts`),
   promptResults:       (id: number)              => fetch(`${BASE}/api/prompts/${id}/results`),
+  runTrace:            (runId: number)           => fetch(`${BASE}/api/runs/${runId}/trace`),
   // SSE — returns EventSource, not fetch
   liveRun:             (promptId: number, providers: string[]) =>
     new EventSource(`${BASE}/api/runs/live?prompt_id=${promptId}&providers=${providers.join(',')}`),
+  strategyChat:        (brand: string, message: string, sessionId: string) =>
+    fetch(`${BASE}/api/strategy/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brand, message, session_id: sessionId })
+    }),
 }

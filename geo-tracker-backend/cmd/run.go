@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/adoreme/geo-tracker/internal/agent"
+	"github.com/adoreme/geo-tracker/internal/adk"
 	"github.com/adoreme/geo-tracker/internal/db"
 	"github.com/adoreme/geo-tracker/internal/providers"
-	"github.com/adoreme/geo-tracker/internal/runner"
 	"github.com/adoreme/geo-tracker/internal/scoring"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -19,217 +19,247 @@ var (
 	runBrands    []string
 	runProviders []string
 	dryRun       bool
+	resumeRun    bool
 	verbose      bool
 	exitCode     bool
+	runID        uint64
 )
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Fire all active prompts at all enabled providers",
+	Short: "Pipeline execution commands",
+}
+
+var runAllCmd = &cobra.Command{
+	Use:   "all",
+	Short: "Execute full pipeline end-to-end",
+	RunE:  runAllHandler,
+}
+
+var runIngestCmd = &cobra.Command{
+	Use:   "ingest",
+	Short: "Fire probe calls and store results (Phase 1)",
+	RunE:  runIngestHandler,
+}
+
+var runIntelligenceCmd = &cobra.Command{
+	Use:   "intelligence",
+	Short: "Process signals and calculate scores (Phase 2)",
+	RunE:  runIntelligenceHandler,
+}
+
+var runInsightCmd = &cobra.Command{
+	Use:   "insight",
+	Short: "Run Explainer and Recommender agents (Phase 3)",
+	RunE:  runInsightHandler,
+}
+
+var runListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List recent pipeline runs",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		start := time.Now()
 		database, err := db.Connect(cfg.Database)
 		if err != nil {
-			return fmt.Errorf("db connect: %w", err)
+			return err
 		}
 		defer database.Close()
 
-		if err := db.Migrate(database); err != nil {
-			return fmt.Errorf("db migrate: %w", err)
-		}
-
-		promptRepo := db.NewPromptRepo(database)
 		resultRepo := db.NewResultRepo(database)
-
-		prompts, err := promptRepo.ListActive()
+		runs, err := resultRepo.ListRuns(20)
 		if err != nil {
-			return fmt.Errorf("list active prompts: %w", err)
+			return err
 		}
 
-		if len(prompts) == 0 {
-			logger.Warn("no active prompts found")
-			return nil
+		fmt.Printf("\n%-4s %-20s %-10s %-8s %-10s %-8s\n", "ID", "Started At", "Status", "Prompts", "Cost", "Duration")
+		fmt.Println(strings.Repeat("-", 65))
+		for _, r := range runs {
+			duration := "n/a"
+			if r.DurationSeconds != nil {
+				duration = fmt.Sprintf("%ds", *r.DurationSeconds)
+			}
+			cost := 0.0
+			if r.TotalCostUSD != nil {
+				cost = *r.TotalCostUSD
+			}
+			fmt.Printf("%-4d %-20s %-10s %-8d $%-9.2f %-8s\n",
+				r.ID,
+				r.StartedAt.Format("2006-01-02 15:04:05"),
+				r.Status,
+				r.PromptCount,
+				cost,
+				duration)
 		}
+		fmt.Println()
+		return nil
+	},
+}
 
-		allProviders := providers.NewProviders(*cfg)
-		var enabledProviders []providers.Provider
-		if len(runProviders) > 0 {
-			for _, pName := range runProviders {
-				for _, p := range allProviders {
-					if p.Name() == pName {
-						enabledProviders = append(enabledProviders, p)
-					}
+func runAllHandler(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	pipe, run, prompts, resultRepo, err := setupPipeline(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	start := time.Now()
+	pipeResult, err := pipe.Run(ctx, *run, prompts)
+	if err != nil && exitCode {
+		os.Exit(1)
+	}
+
+	if !dryRun {
+		resultRepo.UpdateRunStatus(run.ID, "done", pipeResult.TotalCostUSD)
+	}
+
+	duration := time.Since(start)
+	printFancySummary(run.ID, prompts, pipe.GetProviders(), runBrands, run.SampleCount, duration, pipeResult.Results)
+
+	return nil
+}
+
+func runIngestHandler(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	pipe, run, prompts, _, err := setupPipeline(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	_, err = pipe.Ingest(ctx, *run, prompts)
+	return err
+}
+
+func runIntelligenceHandler(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	pipe, run, _, resultRepo, err := setupPipeline(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	results, err := resultRepo.GetRunResults(run.ID)
+	if err != nil {
+		return err
+	}
+
+	_, err = pipe.Intelligence(ctx, *run, results)
+	return err
+}
+
+func runInsightHandler(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	pipe, run, _, _, err := setupPipeline(ctx, cmd)
+	if err != nil {
+		return err
+	}
+
+	_, err = pipe.Insight(ctx, *run)
+	return err
+}
+
+func setupPipeline(ctx context.Context, cmd *cobra.Command) (*adk.Pipeline, *db.Run, []db.Prompt, *db.ResultRepo, error) {
+	database, err := db.Connect(cfg.Database)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("db connect: %w", err)
+	}
+
+	if err := db.Migrate(database); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("db migrate: %w", err)
+	}
+
+	promptRepo := db.NewPromptRepo(database)
+	resultRepo := db.NewResultRepo(database)
+
+	prompts, err := promptRepo.ListActive()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("list active prompts: %w", err)
+	}
+
+	allProviders := providers.NewProviders(*cfg)
+	var enabledProviders []providers.Provider
+	if len(runProviders) > 0 {
+		for _, pName := range runProviders {
+			for _, p := range allProviders {
+				if p.Name() == pName {
+					enabledProviders = append(enabledProviders, p)
+				}
+			}
+		}
+	} else {
+		enabledProviders = allProviders
+	}
+
+	brands := runBrands
+	if len(brands) == 0 {
+		for _, b := range cfg.Brands {
+			brands = append(brands, b.Name)
+		}
+	}
+	runBrands = brands
+
+	samples := cfg.Runner.SamplesPerPrompt
+	if samples <= 0 {
+		samples = 1
+	}
+
+	run := &db.Run{
+		PromptCount: len(prompts),
+		BrandCount:  len(brands),
+		SampleCount: samples,
+		Status:      "running",
+		StartedAt:   time.Now(),
+	}
+
+	if !dryRun {
+		if runID > 0 {
+			run.ID = runID
+			// Load existing run data to prevent overwriting metadata if needed
+			var existing db.Run
+			err := database.Get(&existing, "SELECT * FROM runs WHERE id = ?", runID)
+			if err == nil {
+				run.PromptCount = existing.PromptCount
+				run.BrandCount = existing.BrandCount
+				run.SampleCount = existing.SampleCount
+			}
+		} else if resumeRun {
+			latestID, err := resultRepo.GetLatestRunID()
+			if err == nil && latestID > 0 {
+				run.ID = latestID
+			} else {
+				if err := resultRepo.CreateRun(run); err != nil {
+					return nil, nil, nil, nil, err
 				}
 			}
 		} else {
-			enabledProviders = allProviders
-		}
-
-		brands := runBrands
-		if len(brands) == 0 {
-			for _, b := range cfg.Brands {
-				brands = append(brands, b.Name)
-			}
-		}
-
-		samples := cfg.Runner.SamplesPerPrompt
-		if samples <= 0 {
-			samples = 1
-		}
-
-		logger.Info("starting run",
-			zap.Int("prompts", len(prompts)),
-			zap.Int("providers", len(enabledProviders)),
-			zap.Int("brands", len(brands)),
-			zap.Int("samples", samples))
-
-		run := db.Run{
-			PromptCount: len(prompts),
-			BrandCount:  len(brands),
-			SampleCount: samples,
-			Status:      "running",
-			StartedAt:   time.Now(),
-		}
-
-		if !dryRun {
-			if err := resultRepo.CreateRun(&run); err != nil {
-				return fmt.Errorf("create run: %w", err)
-			}
-		}
-
-		rn := runner.NewRunner(*cfg, logger)
-		fmt.Printf("Running %d jobs across %d workers...\n", len(prompts)*len(enabledProviders)*len(brands)*samples, cfg.Runner.Workers)
-		results := rn.RunAll(context.Background(), prompts, enabledProviders, brands)
-		fmt.Printf("\nProcessing results and calculating scores...\n")
-
-		var totalCost float64
-		successCount := 0
-		for i := range results {
-			if !dryRun {
-				results[i].RunID = run.ID
-				if err := resultRepo.InsertResult(&results[i]); err != nil {
-					logger.Error("failed to insert result", zap.Error(err))
+			// Only create a NEW run entry if we are running the 'all' command or 'ingest'
+			// Intelligence and Insight should generally target existing runs.
+			// We'll default to the latest run for them if no runID/resume is provided.
+			isPhaseCommand := cmd.Name() == "intelligence" || cmd.Name() == "insight"
+			if isPhaseCommand {
+				latestID, err := resultRepo.GetLatestRunID()
+				if err == nil && latestID > 0 {
+					run.ID = latestID
+					logger.Info("defaulting to latest run", zap.Uint64("run_id", run.ID))
 				} else {
-					successCount++
-					totalCost += results[i].CostUSD
+					return nil, nil, nil, nil, fmt.Errorf("no existing run found for phase execution, please provide --run-id")
 				}
-			}
-
-			if verbose {
-				fmt.Printf("\n--- [%s] %s (Sample %d) ---\nPrompt: %d\nResponse: %s\n",
-					results[i].Provider, results[i].Brand, results[i].SampleIndex, results[i].PromptID, results[i].RawResponse)
+			} else {
+				if err := resultRepo.CreateRun(run); err != nil {
+					return nil, nil, nil, nil, err
+				}
 			}
 		}
+	}
 
-		if !dryRun {
-			// 1. Calculate and store stability scores
-			for _, b := range brands {
-				for _, pr := range enabledProviders {
-					for _, p := range prompts {
-						var promptSamples []db.Result
-						for _, r := range results {
-							if r.Brand == b && r.Provider == pr.Name() && r.PromptID == p.ID {
-								promptSamples = append(promptSamples, r)
-							}
-						}
-						if len(promptSamples) > 0 {
-							score := scoring.CalcStabilityScore(promptSamples)
-							resultRepo.InsertStabilityScore(&score)
-						}
-					}
-				}
-			}
+	explainerAgent, err := adk.NewExplainerAgent(ctx, cfg.ADK)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	recommenderAgent, err := adk.NewRecommenderAgent(ctx, cfg.ADK)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 
-			// 3. Calculate and persist visibility scores (organic only, per brand)
-			for _, b := range brands {
-				var brandResults []db.Result
-				for _, r := range results {
-					if r.Brand == b && r.Category != "comparison" {
-						brandResults = append(brandResults, r)
-					}
-				}
-				stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
-				vScore := scoring.CalcVisibilityScore(b, int64(run.ID), brandResults, stabilityScores)
-				if err := resultRepo.InsertVisibilityScore(&db.VisibilityScoreRow{
-					RunID:            run.ID,
-					Brand:            b,
-					Score:            vScore.Score,
-					MentionRate:      vScore.MentionRate,
-					FirstRecRate:     vScore.FirstRecRate,
-					SentimentScore:   vScore.SentimentScore,
-					CitationScore:    vScore.CitationScore,
-					StabilityScore:   vScore.StabilityScore,
-					ProviderCoverage: vScore.ProviderCoverage,
-				}); err != nil {
-					logger.Error("failed to insert visibility score", zap.String("brand", b), zap.Error(err))
-				}
-			}
-
-			// 2. Explainer & Recommender (Simplified placeholders as per agent code)
-			// In real implementation, we'd fetch previous run, calculate diffs, etc.
-			for _, b := range brands {
-				// Explain
-				explainReq := agent.ExplainRequest{
-					Brand:      b,
-					CurrentRun: &run,
-				}
-				agent.Explain(context.Background(), explainReq)
-
-				// Recommend
-				organicSummary, _ := resultRepo.GetBrandSummary(b)
-				citationGaps, _ := resultRepo.GetCitationGap(b, run.ID)
-				stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
-				competitors, _ := resultRepo.GetTopCompetitors(b, 5)
-
-				recReq := agent.RecommendationRequest{
-					Brand:           b,
-					RunID:           run.ID,
-					OrganicSummary:  organicSummary,
-					CitationGaps:    citationGaps,
-					StabilityScores: stabilityScores,
-					TopCompetitors:  competitors,
-				}
-				recs, err := agent.Recommend(context.Background(), recReq)
-				if err != nil {
-					logger.Error("recommender failed", zap.String("brand", b), zap.Error(err))
-					continue
-				}
-				for i := range recs {
-					rec := &db.Recommendation{
-						RunID:          run.ID,
-						Brand:          b,
-						Priority:       recs[i].Priority,
-						Category:       recs[i].Category,
-						Action:         recs[i].Action,
-						ExpectedImpact: recs[i].ExpectedImpact,
-						Rationale:      recs[i].Rationale,
-						Status:         "pending",
-					}
-					if err := resultRepo.InsertRecommendation(rec); err != nil {
-						logger.Error("failed to insert recommendation", zap.Error(err))
-					}
-				}
-			}
-
-			status := "done"
-			if successCount == 0 && len(results) > 0 {
-				status = "failed"
-			}
-			if err := resultRepo.UpdateRunStatus(run.ID, status, totalCost); err != nil {
-				return fmt.Errorf("update run status: %w", err)
-			}
-			logger.Info("run finished", zap.Uint64("run_id", run.ID), zap.Int("results_saved", successCount))
-		}
-
-		duration := time.Since(start)
-		printFancySummary(run.ID, prompts, enabledProviders, brands, samples, duration, results)
-
-		if successCount == 0 && len(results) > 0 && exitCode {
-			os.Exit(1)
-		}
-
-		return nil
-	},
+	pipe := adk.NewPipeline(*cfg, resultRepo, enabledProviders, explainerAgent, recommenderAgent, logger)
+	return pipe, run, prompts, resultRepo, nil
 }
 
 func printFancySummary(runID uint64, prompts []db.Prompt, providersList []providers.Provider, brands []string, samples int, duration time.Duration, results []db.Result) {
@@ -307,9 +337,19 @@ func printFancySummary(runID uint64, prompts []db.Prompt, providersList []provid
 
 func init() {
 	rootCmd.AddCommand(runCmd)
-	runCmd.Flags().StringSliceVar(&runBrands, "brands", nil, "override brands from config")
-	runCmd.Flags().StringSliceVar(&runProviders, "providers", nil, "run only specific providers")
-	runCmd.Flags().BoolVar(&dryRun, "dry-run", false, "probe but do not write to DB")
-	runCmd.Flags().BoolVar(&verbose, "verbose", false, "print raw responses")
-	runCmd.Flags().BoolVar(&exitCode, "exit-code", false, "exit non-zero on failure")
+	runCmd.AddCommand(runAllCmd)
+	runCmd.AddCommand(runIngestCmd)
+	runCmd.AddCommand(runIntelligenceCmd)
+	runCmd.AddCommand(runInsightCmd)
+	runCmd.AddCommand(runListCmd)
+
+	for _, c := range []*cobra.Command{runAllCmd, runIngestCmd, runIntelligenceCmd, runInsightCmd} {
+		c.Flags().StringSliceVar(&runBrands, "brands", nil, "override brands from config")
+		c.Flags().StringSliceVar(&runProviders, "providers", nil, "run only specific providers")
+		c.Flags().BoolVar(&dryRun, "dry-run", false, "probe but do not write to DB")
+		c.Flags().BoolVar(&resumeRun, "resume", false, "resume the latest incomplete run")
+		c.Flags().Uint64Var(&runID, "run-id", 0, "target a specific run ID")
+		c.Flags().BoolVar(&verbose, "verbose", false, "print raw responses")
+		c.Flags().BoolVar(&exitCode, "exit-code", false, "exit non-zero on failure")
+	}
 }

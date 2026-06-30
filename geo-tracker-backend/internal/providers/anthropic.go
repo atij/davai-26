@@ -42,6 +42,22 @@ func (p *anthropicProvider) Probe(ctx context.Context, prompt string) (ProbeResp
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
+		"tools": []map[string]interface{}{
+			{
+				"name":        "google_search",
+				"description": "A tool that allows you to search Google for real-time information and brand visibility.",
+				"input_schema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "The search query to look up on Google.",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
 	}
 
 	jsonData, err := json.Marshal(payload)

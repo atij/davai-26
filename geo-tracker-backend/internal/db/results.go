@@ -149,7 +149,7 @@ type Run struct {
 	BrandCount      int        `db:"brand_count" json:"brand_count"`
 	SampleCount     int        `db:"sample_count" json:"sample_count"`
 	Status          string     `db:"status" json:"status"`
-	TotalCostUSD    float64    `db:"total_cost_usd" json:"total_cost_usd"`
+	TotalCostUSD    *float64   `db:"total_cost_usd" json:"total_cost_usd"`
 }
 
 func (r *ResultRepo) CreateRun(run *Run) error {
@@ -175,6 +175,13 @@ func (r *ResultRepo) UpdateRunStatus(id uint64, status string, totalCost float64
 			duration_seconds = TIMESTAMPDIFF(SECOND, started_at, NOW()) 
 		WHERE id = ?`, status, totalCost, id)
 	return err
+}
+
+// ListRuns returns a list of recent runs.
+func (r *ResultRepo) ListRuns(limit int) ([]Run, error) {
+	var runs []Run
+	err := r.db.Select(&runs, "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", limit)
+	return runs, err
 }
 
 func (r *ResultRepo) GetLatestRunID() (uint64, error) {
@@ -455,6 +462,28 @@ type VisibilityScoreRow struct {
 	CreatedAt        time.Time `db:"created_at"         json:"created_at"`
 }
 
+// RunTrace maps to the run_traces table.
+type RunTrace struct {
+	ID         uint64     `db:"id"          json:"id"`
+	RunID      uint64     `db:"run_id"      json:"run_id"`
+	Phase      string     `db:"phase"       json:"phase"`
+	AgentName  string     `db:"agent_name"  json:"agent_name"`
+	StartedAt  time.Time  `db:"started_at"  json:"started_at"`
+	FinishedAt *time.Time `db:"finished_at" json:"finished_at"`
+	DurationMS *int       `db:"duration_ms" json:"duration_ms"`
+	Status     string     `db:"status"      json:"status"`
+	ErrorText  *string    `db:"error_text"  json:"error_text"`
+}
+
+// AgentSession maps to the agent_sessions table.
+type AgentSession struct {
+	ID        string    `db:"id"`
+	Brand     string    `db:"brand"`
+	Data      string    `db:"data"` // serialized JSON blob
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
+
 func (r *ResultRepo) InsertVisibilityScore(v *VisibilityScoreRow) error {
 	q := `INSERT INTO visibility_scores
         (run_id, brand, score, mention_rate, first_rec_rate, sentiment_score,
@@ -520,6 +549,7 @@ func (r *ResultRepo) InsertRecommendation(rec *Recommendation) error {
 	return err
 }
 
+// GetRecommendations returns recommendations for a brand filtered by status.
 func (r *ResultRepo) GetRecommendations(brand string, status string) ([]Recommendation, error) {
 	var recs []Recommendation
 	query := "SELECT * FROM recommendations WHERE brand = ?"
@@ -530,7 +560,13 @@ func (r *ResultRepo) GetRecommendations(brand string, status string) ([]Recommen
 	}
 	query += " ORDER BY created_at DESC"
 	err := r.db.Select(&recs, query, args...)
-	return recs, err
+	if err != nil {
+		return nil, err
+	}
+	if recs == nil {
+		return []Recommendation{}, nil
+	}
+	return recs, nil
 }
 
 func (r *ResultRepo) MarkRecommendationImplemented(id uint64) error {
@@ -543,5 +579,110 @@ func (r *ResultRepo) GetBrands() ([]string, error) {
 	var brands []string
 	err := r.db.Select(&brands, "SELECT DISTINCT brand FROM results ORDER BY brand ASC")
 	return brands, err
+}
+
+// --- Strategy Agent tools (read-only) ---
+
+// GetVisibilityTrend returns the last N visibility scores for a brand across runs.
+// Used by Strategy Agent tool: get_visibility_trend
+func (r *ResultRepo) GetVisibilityTrend(brand string, limit int) ([]TrendPoint, error) {
+	return r.GetBrandTrend(brand, limit)
+}
+
+// GetCompetitorShare returns the top competitors by mention count for a run.
+// Used by Strategy Agent tool: get_competitor_share
+func (r *ResultRepo) GetCompetitorShare(brand string, runID uint64) ([]CompetitorCount, error) {
+	return r.GetTopCompetitors(brand, 10) // Limit to top 10
+}
+
+// SearchRecommendations returns recommendations for a brand filtered by status.
+// status: "pending" | "implemented" | "" (all)
+// Used by Strategy Agent tool: search_recommendations
+func (r *ResultRepo) SearchRecommendations(brand string, status string) ([]Recommendation, error) {
+	return r.GetRecommendations(brand, status)
+}
+
+// --- Run trace ---
+
+// GetRunTrace returns all trace rows for a run, ordered by started_at.
+// Used by GET /api/runs/:id/trace handler.
+func (r *ResultRepo) GetRunTrace(runID uint64) ([]RunTrace, error) {
+	var traces []RunTrace
+	err := r.db.Select(&traces, "SELECT * FROM run_traces WHERE run_id = ? ORDER BY started_at ASC", runID)
+	if err != nil {
+		return nil, err
+	}
+	if traces == nil {
+		return []RunTrace{}, nil
+	}
+	return traces, nil
+}
+
+// InsertRunTrace writes a new trace row. Called by pipeline at phase start.
+func (r *ResultRepo) InsertRunTrace(trace *RunTrace) error {
+	query := `INSERT INTO run_traces (run_id, phase, agent_name, started_at, status) 
+	          VALUES (:run_id, :phase, :agent_name, :started_at, :status)`
+	res, err := r.db.NamedExec(query, trace)
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err == nil {
+		trace.ID = uint64(id)
+	}
+	// Reload to ensure we have the correct DB timestamp
+	_ = r.db.Get(&trace.StartedAt, "SELECT started_at FROM run_traces WHERE id = ?", trace.ID)
+	return err
+}
+
+// UpdateRunTrace sets finished_at, duration_ms, status, error_text on an existing row.
+// Called by pipeline at phase end.
+func (r *ResultRepo) UpdateRunTrace(id uint64, finishedAt time.Time, durationMS int, status, errText string) error {
+	var errTextPtr *string
+	if errText != "" {
+		errTextPtr = &errText
+	}
+	_, err := r.db.Exec(`
+		UPDATE run_traces 
+		SET finished_at = ?, duration_ms = ?, status = ?, error_text = ? 
+		WHERE id = ?`, finishedAt, durationMS, status, errTextPtr, id)
+	return err
+}
+
+// --- Session store ---
+
+// GetAgentSession loads a session by ID. Returns nil, nil if not found.
+func (r *ResultRepo) GetAgentSession(id string) (*AgentSession, error) {
+	var session AgentSession
+	err := r.db.Get(&session, "SELECT * FROM agent_sessions WHERE id = ?", id)
+	if err != nil {
+		return nil, nil // Return nil, nil if not found as requested
+	}
+	return &session, nil
+}
+
+// UpsertAgentSession inserts or updates a session row (INSERT ... ON DUPLICATE KEY UPDATE).
+func (r *ResultRepo) UpsertAgentSession(session *AgentSession) error {
+	query := `INSERT INTO agent_sessions (id, brand, data, updated_at) 
+	          VALUES (:id, :brand, :data, NOW()) 
+	          ON DUPLICATE KEY UPDATE brand = VALUES(brand), data = VALUES(data), updated_at = NOW()`
+	_, err := r.db.NamedExec(query, session)
+	return err
+}
+
+// DeleteAgentSession removes a session row. Called during session cleanup.
+func (r *ResultRepo) DeleteAgentSession(id string) error {
+	_, err := r.db.Exec("DELETE FROM agent_sessions WHERE id = ?", id)
+	return err
+}
+
+// ResultExists checks if a specific probe job has already been recorded for a run.
+func (r *ResultRepo) ResultExists(runID, promptID uint64, provider, brand string, sampleIndex int) (bool, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM results 
+	          WHERE run_id = ? AND prompt_id = ? AND provider = ? AND brand = ? AND sample_index = ? 
+	          AND extraction_error = ''`
+	err := r.db.Get(&count, query, runID, promptID, provider, brand, sampleIndex)
+	return count > 0, err
 }
 

@@ -115,3 +115,34 @@ CREATE TABLE IF NOT EXISTS recommendations (
     FOREIGN KEY (run_id) REFERENCES runs(id),
     INDEX idx_recommendations_brand (brand, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- ADK agent layer tables (added for ADK refactor)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Agent session memory — persists Strategy Agent conversation state across requests.
+-- One row per brand per user session. `data` is a JSON blob of ADK session state.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id          VARCHAR(64) PRIMARY KEY,
+    brand       VARCHAR(128) NOT NULL,
+    data        JSON NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_sessions_brand (brand)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Run traces — one row per agent per pipeline phase per run.
+-- Used by GET /api/runs/:id/trace to render the agent timeline in the dashboard.
+CREATE TABLE IF NOT EXISTS run_traces (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    run_id      BIGINT UNSIGNED NOT NULL,
+    phase       VARCHAR(64)  NOT NULL,   -- probe | intelligence | insight
+    agent_name  VARCHAR(128) NOT NULL,   -- e.g. "claude_prober", "extractor", "explainer"
+    started_at  DATETIME(3)  NOT NULL,
+    finished_at DATETIME(3),
+    duration_ms INT,
+    status      VARCHAR(32)  NOT NULL,   -- running | success | error | retried
+    error_text  TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    INDEX idx_traces_run (run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

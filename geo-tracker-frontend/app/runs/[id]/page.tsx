@@ -8,16 +8,19 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { Pill } from '@/components/ui/Pill'
 import { ProviderDot } from '@/components/ui/ProviderDot'
 import { capitalize, cn } from '@/lib/utils'
-import { ChevronLeft, Filter, Search, ChevronDown, ChevronRight, Info } from 'lucide-react'
+import { ChevronLeft, Filter, Search, ChevronDown, ChevronRight, Info, Activity } from 'lucide-react'
 import Link from 'next/link'
+import { RunTraceTimeline } from '@/components/runs/RunTraceTimeline'
 
 export default function RunDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
-  const { results, isLoading } = useRunDetail(parseInt(id))
+  const runId = parseInt(id)
+  const { results, isLoading } = useRunDetail(runId)
   
   const [filterBrand, setFilterBrand] = useState<string>('all')
   const [filterProvider, setFilterProvider] = useState<string>('all')
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [showTrace, setShowTrace] = useState(false)
 
   const brands = Array.from(new Set(results?.map(r => r.brand) || []))
   const providers = ['claude', 'chatgpt', 'perplexity', 'gemini']
@@ -63,6 +66,18 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                         {providers.map(p => <option key={p} value={p}>{capitalize(p)}</option>)}
                     </select>
                 </div>
+                <button 
+                  onClick={() => setShowTrace(!showTrace)}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 rounded-xl border transition-all text-xs font-bold",
+                    showTrace 
+                      ? "bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-100" 
+                      : "bg-white text-slate-600 border-slate-200 shadow-sm hover:border-slate-300"
+                  )}
+                >
+                    <Activity size={14} />
+                    {showTrace ? 'Hide Agent Graph' : 'Show Agent Graph'}
+                </button>
             </div>
             
             <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
@@ -70,8 +85,10 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             </div>
         </div>
 
-        <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
-           <table className="w-full text-left border-collapse">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+            <div className={cn("lg:col-span-2", !showTrace && "lg:col-span-3")}>
+                <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
+                   <table className="w-full text-left border-collapse">
                <thead>
                    <tr className="bg-slate-50/50 border-b border-slate-100">
                         <th className="w-10 px-6 py-4"></th>
@@ -166,6 +183,13 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     )}
                </tbody>
            </table>
+        </div>
+            </div>
+            {showTrace && (
+                <div className="lg:col-span-1 sticky top-24">
+                    <RunTraceTimeline runId={runId} />
+                </div>
+            )}
         </div>
       </PageShell>
     </>

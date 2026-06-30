@@ -126,6 +126,28 @@ func (p *openAIProvider) Probe(ctx context.Context, prompt string) (ProbeRespons
 		},
 	}
 
+	// OpenAI Search integration (for GPT-4o models)
+	if p.name == "chatgpt" {
+		payload["tools"] = []map[string]interface{}{
+			{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        "web_search",
+					"description": "Search the web for real-time information and brand presence.",
+					"parameters": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"query": map[string]interface{}{
+								"type": "string",
+							},
+						},
+						"required": []string{"query"},
+					},
+				},
+			},
+		}
+	}
+
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return ProbeResponse{}, err

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/adoreme/geo-tracker/internal/adk"
 	"github.com/adoreme/geo-tracker/internal/config"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -14,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func StartServer(ctx context.Context, cfg config.ServeConfig, database *sqlx.DB, logger *zap.Logger) error {
+func StartServer(ctx context.Context, cfg config.ServeConfig, database *sqlx.DB, logger *zap.Logger, strategyAgent *adk.StrategyAgent) error {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -42,7 +43,7 @@ func StartServer(ctx context.Context, cfg config.ServeConfig, database *sqlx.DB,
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	h := NewHandlers(database)
+	h := NewHandlers(database, strategyAgent)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.GetHealth)
@@ -60,6 +61,8 @@ func StartServer(ctx context.Context, cfg config.ServeConfig, database *sqlx.DB,
 		r.Get("/competitors", h.GetCompetitors)
 		r.Get("/recommendations", h.GetRecommendations)
 		r.Post("/recommendations/{id}/implement", h.PostImplementRecommendation)
+		r.Post("/strategy/chat", h.StrategyChatHandler)
+		r.Get("/runs/{id}/trace", h.RunTraceHandler)
 	})
 
 	srv := &http.Server{

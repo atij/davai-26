@@ -3,13 +3,14 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { LayoutDashboard, BarChart2, MessageSquare, History, Lightbulb, ShipWheel } from "lucide-react"
+import { LayoutDashboard, BarChart2, MessageSquare, History, Lightbulb, ShipWheel, MessageCircle } from "lucide-react"
 
 export const Sidebar = () => {
   const pathname = usePathname()
 
   const navItems = [
     { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Strategy Chat", href: "/strategy", icon: MessageCircle },
     { label: "Compare", href: "/compare", icon: BarChart2 },
     { label: "Prompts", href: "/prompts", icon: MessageSquare },
     { label: "Runs", href: "/runs", icon: History },

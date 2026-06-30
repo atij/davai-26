@@ -1,23 +1,26 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/adoreme/geo-tracker/internal/adk"
 	"github.com/adoreme/geo-tracker/internal/db"
 	"github.com/go-chi/chi/v5"
 	"github.com/jmoiron/sqlx"
 )
 
 type Handlers struct {
-	db *sqlx.DB
+	db            *sqlx.DB
+	strategyAgent *adk.StrategyAgent
 }
 
-func NewHandlers(database *sqlx.DB) *Handlers {
-	return &Handlers{db: database}
+func NewHandlers(database *sqlx.DB, strategyAgent *adk.StrategyAgent) *Handlers {
+	return &Handlers{db: database, strategyAgent: strategyAgent}
 }
 
 func (h *Handlers) GetHealth(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +284,54 @@ func (h *Handlers) GetCompetitors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sendJSON(w, http.StatusOK, competitors)
+}
+
+func (h *Handlers) StrategyChatHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Brand     string `json:"brand"`
+		Message   string `json:"message"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid request body", "BAD_REQUEST")
+		return
+	}
+
+	if h.strategyAgent == nil {
+		sendError(w, http.StatusServiceUnavailable, "strategy agent not initialized", "SERVICE_UNAVAILABLE")
+		return
+	}
+
+	events, err := h.strategyAgent.Chat(r.Context(), req.SessionID, req.Brand, req.Message)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	for ev := range events {
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+}
+
+func (h *Handlers) RunTraceHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, _ := strconv.ParseUint(idStr, 10, 64)
+	repo := db.NewResultRepo(h.db)
+
+	traces, err := repo.GetRunTrace(id)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR")
+		return
+	}
+	sendJSON(w, http.StatusOK, traces)
 }
 
 func resolveBrand(brandRaw string) string {

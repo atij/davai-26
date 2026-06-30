@@ -446,4 +446,46 @@ Copy only the binary into the final image. No config files — all config via en
 
 ---
 
+## ADK agent layer
+
+Pipeline orchestration lives in `internal/adk/pipeline.go`.
+Do not add sequencing logic to `cmd/run.go` — all phase ordering is in `Pipeline.Run()`.
+
+### Provider selection
+
+ADK agents use a separate provider from the probe providers.
+Configured via `adk.provider` in `config.yaml` — either `"gemini"` or `"anthropic"`.
+The API key is `adk.api_key` (provider-agnostic field name).
+Model strings in `adk.strategy_model`, `adk.explainer_model`, `adk.recommender_model`
+must match the naming convention of the chosen provider.
+
+To switch from Gemini to Anthropic: change `adk.provider` and `adk.api_key` in
+`config.local.yaml` and update the model strings. Zero code changes required.
+
+### Three pipeline phases
+
+1. **Probe** (parallel goroutine pool) — fires all provider × prompt × brand × sample jobs
+2. **Intelligence** (parallel errgroup) — extraction + stability scoring run concurrently
+3. **Insight** (parallel errgroup, per brand) — explainer + recommender run concurrently
+
+### Agent types
+
+| Agent | File | Model config key | Tools | Memory |
+|---|---|---|---|---|
+| ExplainerAgent | `internal/adk/agents.go` | `adk.explainer_model` | none | none |
+| RecommenderAgent | `internal/adk/agents.go` | `adk.recommender_model` | none | none |
+| StrategyAgent | `internal/adk/agents.go` | `adk.strategy_model` | 6 DB tools | MySQL session store |
+
+### Rules
+
+- Never call ADK agents from `cmd/` directly — always through `Pipeline` or `Handler`
+- Strategy Agent session IDs are brand-scoped: format `"{brand}-{uuid}"`, e.g. `"adore-me-abc123"`
+- Tool functions in `tools.go` are read-only except `mark_recommendation_done`
+- Run traces are written by `Pipeline.traceStart/traceEnd` — never write them manually
+- `adk.api_key` never appears in logs — same rule as all other API keys
+- Model factory `NewADKModel()` is the only place that switches on `adk.provider` —
+  do not add provider-switch logic anywhere else
+
+---
+
 *GEO Tracker · Adore Me Tech · June 2026*

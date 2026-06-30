@@ -78,6 +78,20 @@ type Config struct {
 	Runner    RunnerConfig    `mapstructure:"runner"`
 	CostRates CostRatesConfig `mapstructure:"cost_rates"`
 	Serve     ServeConfig     `mapstructure:"serve"`
+	ADK       ADKConfig       `mapstructure:"adk"`
+}
+
+// ADKConfig controls which LLM backend powers the agent layer.
+// This is separate from the providers config, which controls probe calls.
+// Set Provider to "gemini" or "anthropic". APIKey is the key for that provider.
+// Model strings must match the chosen provider's model naming convention.
+type ADKConfig struct {
+	Provider         string `mapstructure:"provider"` // "gemini" | "anthropic"
+	APIKey           string `mapstructure:"api_key"`  // provider-agnostic key field
+	StrategyModel    string `mapstructure:"strategy_model"`
+	ExplainerModel   string `mapstructure:"explainer_model"`
+	RecommenderModel string `mapstructure:"recommender_model"`
+	SessionTTLDays   int    `mapstructure:"session_ttl_days"`
 }
 
 func Load() (*Config, error) {
@@ -126,6 +140,14 @@ func (c *Config) Validate() error {
 
 	if len(c.Brands) == 0 {
 		errs = append(errs, "at least one brand must be configured")
+	}
+
+	validADKProviders := map[string]bool{"gemini": true, "anthropic": true}
+	if c.ADK.Provider != "" && !validADKProviders[c.ADK.Provider] {
+		errs = append(errs, fmt.Sprintf("adk.provider must be 'gemini' or 'anthropic', got %q", c.ADK.Provider))
+	}
+	if c.ADK.Provider != "" && c.ADK.APIKey == "" {
+		errs = append(errs, "adk.api_key is required when adk.provider is set")
 	}
 
 	if len(errs) > 0 {

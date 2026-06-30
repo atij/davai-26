@@ -1,770 +1,1018 @@
-# Lighthouse — Hackathon Coding Tasks
-### Agent Instructions · geo-tracker-backend + geo-tracker-frontend
+# Project Lighthouse — ADK Refactoring Task List
+### geo-tracker-backend · Agent-Native Pipeline
 
-Work through tasks in order within each priority tier. Each task is self-contained and testable before moving to the next. Perplexity provider tasks are deferred — do not touch provider config for Perplexity.
-
----
-
-## Ground rules (never violate)
-
-- Probe calls have NO system prompt — do not add one
-- `comparison` category is NEVER included in organic metrics
-- API keys and passwords are NEVER logged at any level
-- All DB queries use sqlx named parameters — no string concatenation
-- No global variables — inject all dependencies
-- Every result row must have a valid `run_id` before being written
+> Hand this file to Claude Code. Work tasks in order. Each task has a
+> verification step — do not proceed to the next task until it passes.
 
 ---
 
-## P0 — Demo breaks without these
+## Context: what we're doing and why
+
+The existing backend has a working goroutine runner (`runner/runner.go`) and two
+LLM agent stubs (`agent/explainer.go`, `agent/recommender.go`) with TODO placeholders.
+
+We are replacing the orchestration layer with **Google ADK Go**
+(`google.golang.org/adk`) to get:
+- A real multi-agent pipeline with declared parallel phases
+- Real explainer and recommender agents (replacing the stubs)
+- A conversational Strategy Agent with DB-backed tools and session memory
+- A run trace table that makes the agent graph visible in the dashboard
+
+**Nothing in `providers/` or `scoring/` changes.**
 
 ---
 
-### `BE-01` · Fix: Visibility Score never persisted to DB
+## Files: what happens to each one
 
-**Problem:** `CalcVisibilityScore` is called in `printFancySummary` for display only. The result is never written to the database. The dashboard always shows 0.0 because the API has no stored score to return.
+| File | Action | Notes |
+|---|---|---|
+| `internal/providers/*.go` | **KEEP, zero changes** | Pure HTTP calls, no orchestration |
+| `internal/scoring/visibility.go` | **KEEP, zero changes** | Pure math |
+| `internal/db/schema.sql` | **ADDITIVE** | 2 new tables appended at bottom |
+| `internal/db/results.go` | **ADDITIVE** | New query functions for ADK tools only |
+| `internal/config/config.go` | **ADDITIVE** | New `ADKConfig` struct + field |
+| `config.yaml` | **ADDITIVE** | New `adk:` section |
+| `internal/runner/runner.go` | **REPLACE** | ADK pipeline replaces goroutine pool |
+| `internal/agent/explainer.go` | **REPLACE** | Real `LlmAgent` replaces stub |
+| `internal/agent/recommender.go` | **REPLACE** | Real `LlmAgent` replaces stub |
+| `internal/agent/extractor.go` | **KEEP** | Called by pipeline Phase 2 unchanged |
+| `internal/adk/` | **NEW PACKAGE** | Pipeline, model factory, tools, agents, memory |
+| `internal/api/handlers.go` | **ADDITIVE** | New `/api/strategy/chat` + `/api/runs/{id}/trace` |
+| `internal/api/server.go` | **ADDITIVE** | Register 2 new routes |
+| `cmd/run.go` | **UPDATE** | Call `pipeline.Run()` instead of `runner.RunAll()` |
+| `cmd/serve.go` | **UPDATE** | Construct and inject `StrategyAgent` into handler |
+| `CLAUDE.md` | **ADDITIVE** | ADK rules section appended |
 
-**Files to change:** `internal/db/schema.sql`, `internal/db/results.go`, `cmd/run.go`
+---
 
-**Step 1 — Add table to `internal/db/schema.sql`:**
+## Task 0 — Add ADK Go dependency
+
+```bash
+go get google.golang.org/adk@latest
+go mod tidy
+```
+
+**Verify:** `go build ./...` compiles with zero errors.
+
+**Hard gate:** Do not proceed to Task 1 until this passes.
+
+---
+
+## Task 1 — ADK config: provider-agnostic design
+
+The ADK agents (explainer, recommender, strategy) can run on any LLM backend —
+Gemini, Claude, or any model ADK supports. The config captures the provider name,
+the API key for that provider, and the model string for each agent role.
+This keeps the agent layer completely decoupled from the probe provider config.
+
+### 1a — `internal/config/config.go`
+
+Add to the file (do not modify any existing structs):
+
+```go
+// ADKConfig controls which LLM backend powers the agent layer.
+// This is separate from the providers config, which controls probe calls.
+// Set Provider to "gemini" or "anthropic". APIKey is the key for that provider.
+// Model strings must match the chosen provider's model naming convention.
+type ADKConfig struct {
+    Provider         string `mapstructure:"provider"`          // "gemini" | "anthropic"
+    APIKey           string `mapstructure:"api_key"`           // provider-agnostic key field
+    StrategyModel    string `mapstructure:"strategy_model"`
+    ExplainerModel   string `mapstructure:"explainer_model"`
+    RecommenderModel string `mapstructure:"recommender_model"`
+    SessionTTLDays   int    `mapstructure:"session_ttl_days"`
+}
+```
+
+Add the field to the root `Config` struct:
+```go
+ADK ADKConfig `mapstructure:"adk"`
+```
+
+Add validation in `Validate()`:
+```go
+// In Validate():
+validADKProviders := map[string]bool{"gemini": true, "anthropic": true}
+if cfg.ADK.Provider != "" && !validADKProviders[cfg.ADK.Provider] {
+    errs = append(errs, fmt.Errorf("adk.provider must be 'gemini' or 'anthropic', got %q", cfg.ADK.Provider))
+}
+if cfg.ADK.Provider != "" && cfg.ADK.APIKey == "" {
+    errs = append(errs, fmt.Errorf("adk.api_key is required when adk.provider is set"))
+}
+```
+
+### 1b — `config.yaml`
+
+Append at the bottom. Do not modify existing sections.
+
+```yaml
+# ADK agent layer — controls LLM backend for explainer, recommender, strategy agents.
+# This is separate from the providers section (probe calls).
+#
+# provider options: "gemini" | "anthropic"
+# api_key:          your Gemini API key (if provider = gemini)
+#                   your Anthropic API key (if provider = anthropic)
+#
+# Gemini model examples:  "gemini-2.0-flash", "gemini-1.5-pro"
+# Anthropic model examples: "claude-sonnet-4-6", "claude-haiku-4-5-20251001"
+adk:
+  provider: "gemini"
+  api_key: ""                            # GEOTRACKER_ADK_API_KEY env var
+  strategy_model: "gemini-2.0-flash"
+  explainer_model: "gemini-2.0-flash"
+  recommender_model: "gemini-2.0-flash"
+  session_ttl_days: 30
+```
+
+> **To switch to Anthropic:** change `provider` to `"anthropic"`, set `api_key` to your
+> Anthropic key, and update model strings to `"claude-sonnet-4-6"` etc.
+> No code changes required — only config.
+
+### 1c — `config.local.yaml` (gitignored)
+
+This is where the actual key lives locally:
+```yaml
+adk:
+  provider: "gemini"
+  api_key: "YOUR_GEMINI_API_KEY_HERE"
+```
+
+In Kubernetes, inject via:
+```
+GEOTRACKER_ADK_PROVIDER=gemini
+GEOTRACKER_ADK_API_KEY=<secret>
+```
+
+**Verify:** `go test ./internal/config/...` passes.
+
+---
+
+## Task 2 — Add new DB tables to schema
+
+**File:** `internal/db/schema.sql`
+
+Append at the very bottom. Do not modify any existing table definitions.
 
 ```sql
-CREATE TABLE IF NOT EXISTS visibility_scores (
-    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    run_id            BIGINT UNSIGNED NOT NULL,
-    brand             VARCHAR(255) NOT NULL,
-    score             DECIMAL(6,2) NOT NULL DEFAULT 0,
-    mention_rate      DECIMAL(6,2) NOT NULL DEFAULT 0,
-    first_rec_rate    DECIMAL(6,2) NOT NULL DEFAULT 0,
-    sentiment_score   DECIMAL(5,3) NOT NULL DEFAULT 0,
-    citation_score    DECIMAL(6,2) NOT NULL DEFAULT 0,
-    stability_score   DECIMAL(6,2) NOT NULL DEFAULT 0,
-    provider_coverage DECIMAL(6,2) NOT NULL DEFAULT 0,
-    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_brand_run (brand, run_id),
-    FOREIGN KEY (run_id) REFERENCES runs(id)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- ADK agent layer tables (added for ADK refactor)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Agent session memory — persists Strategy Agent conversation state across requests.
+-- One row per brand per user session. `data` is a JSON blob of ADK session state.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id          VARCHAR(64) PRIMARY KEY,
+    brand       VARCHAR(128) NOT NULL,
+    data        JSON NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_sessions_brand (brand)
+);
+
+-- Run traces — one row per agent per pipeline phase per run.
+-- Used by GET /api/runs/:id/trace to render the agent timeline in the dashboard.
+CREATE TABLE IF NOT EXISTS run_traces (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    run_id      BIGINT UNSIGNED NOT NULL,
+    phase       VARCHAR(64)  NOT NULL,   -- probe | intelligence | insight
+    agent_name  VARCHAR(128) NOT NULL,   -- e.g. "claude_prober", "extractor", "explainer"
+    started_at  DATETIME(3)  NOT NULL,
+    finished_at DATETIME(3),
+    duration_ms INT,
+    status      VARCHAR(32)  NOT NULL,   -- running | success | error | retried
+    error_text  TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    INDEX idx_traces_run (run_id)
 );
 ```
 
-**Step 2 — Add DB struct and methods to `internal/db/results.go`:**
+Apply to local DB:
+```bash
+mysql -u root geo_tracker < internal/db/schema.sql
+```
+
+**Verify:** `SHOW TABLES;` in MySQL shows `agent_sessions` and `run_traces`.
+No existing tables were dropped or altered.
+
+---
+
+## Task 3 — New DB structs and query functions
+
+**File:** `internal/db/results.go`
+
+Add the following structs and functions. Do not modify any existing code.
+
+### 3a — New structs
 
 ```go
-type VisibilityScoreRow struct {
-    ID               uint64    `db:"id"                json:"id"`
-    RunID            uint64    `db:"run_id"             json:"run_id"`
-    Brand            string    `db:"brand"              json:"brand"`
-    Score            float64   `db:"score"              json:"score"`
-    MentionRate      float64   `db:"mention_rate"       json:"mention_rate"`
-    FirstRecRate     float64   `db:"first_rec_rate"     json:"first_rec_rate"`
-    SentimentScore   float64   `db:"sentiment_score"    json:"sentiment_score"`
-    CitationScore    float64   `db:"citation_score"     json:"citation_score"`
-    StabilityScore   float64   `db:"stability_score"    json:"stability_score"`
-    ProviderCoverage float64   `db:"provider_coverage"  json:"provider_coverage"`
-    CreatedAt        time.Time `db:"created_at"         json:"created_at"`
+// RunTrace maps to the run_traces table.
+type RunTrace struct {
+    ID         uint64     `db:"id"`
+    RunID      uint64     `db:"run_id"`
+    Phase      string     `db:"phase"`
+    AgentName  string     `db:"agent_name"`
+    StartedAt  time.Time  `db:"started_at"`
+    FinishedAt *time.Time `db:"finished_at"`
+    DurationMS *int       `db:"duration_ms"`
+    Status     string     `db:"status"`
+    ErrorText  *string    `db:"error_text"`
 }
 
-func (r *ResultRepo) InsertVisibilityScore(v *VisibilityScoreRow) error {
-    q := `INSERT INTO visibility_scores
-        (run_id, brand, score, mention_rate, first_rec_rate, sentiment_score,
-         citation_score, stability_score, provider_coverage)
-        VALUES (:run_id, :brand, :score, :mention_rate, :first_rec_rate, :sentiment_score,
-         :citation_score, :stability_score, :provider_coverage)`
-    _, err := r.db.NamedExec(q, v)
-    return err
+// AgentSession maps to the agent_sessions table.
+type AgentSession struct {
+    ID        string    `db:"id"`
+    Brand     string    `db:"brand"`
+    Data      string    `db:"data"` // serialized JSON blob
+    CreatedAt time.Time `db:"created_at"`
+    UpdatedAt time.Time `db:"updated_at"`
+}
+```
+
+### 3b — New query functions
+
+```go
+// --- Strategy Agent tools (read-only) ---
+
+// GetVisibilityTrend returns the last N visibility scores for a brand across runs.
+// Used by Strategy Agent tool: get_visibility_trend
+func (r *ResultsRepo) GetVisibilityTrend(brand string, limit int) ([]TrendPoint, error)
+
+// GetCompetitorShare returns the top competitors by mention count for a run.
+// Used by Strategy Agent tool: get_competitor_share
+func (r *ResultsRepo) GetCompetitorShare(brand string, runID uint64) ([]CompetitorCount, error)
+
+// SearchRecommendations returns recommendations for a brand filtered by status.
+// status: "pending" | "implemented" | "" (all)
+// Used by Strategy Agent tool: search_recommendations
+func (r *ResultsRepo) SearchRecommendations(brand string, status string) ([]Recommendation, error)
+
+// --- Run trace ---
+
+// GetRunTrace returns all trace rows for a run, ordered by started_at.
+// Used by GET /api/runs/:id/trace handler.
+func (r *ResultsRepo) GetRunTrace(runID uint64) ([]RunTrace, error)
+
+// InsertRunTrace writes a new trace row. Called by pipeline at phase start.
+func (r *ResultsRepo) InsertRunTrace(trace *RunTrace) error
+
+// UpdateRunTrace sets finished_at, duration_ms, status, error_text on an existing row.
+// Called by pipeline at phase end.
+func (r *ResultsRepo) UpdateRunTrace(id uint64, finishedAt time.Time, durationMS int, status, errText string) error
+
+// --- Session store ---
+
+// GetAgentSession loads a session by ID. Returns nil, nil if not found.
+func (r *ResultsRepo) GetAgentSession(id string) (*AgentSession, error)
+
+// UpsertAgentSession inserts or updates a session row (INSERT ... ON DUPLICATE KEY UPDATE).
+func (r *ResultsRepo) UpsertAgentSession(session *AgentSession) error
+
+// DeleteAgentSession removes a session row. Called during session cleanup.
+func (r *ResultsRepo) DeleteAgentSession(id string) error
+```
+
+**Verify:** `go build ./internal/db/...` compiles cleanly.
+
+---
+
+## Task 4 — Create `internal/adk/` package
+
+Create the directory. This package is the heart of the refactor.
+Files within it must not import from `internal/runner/` — that package is being replaced.
+
+---
+
+### Task 4a — `internal/adk/model.go` — provider-agnostic model factory
+
+This is the key file that makes the agent provider swappable via config.
+It reads `cfg.ADK.Provider` and returns the correct ADK model instance.
+
+```go
+package adk
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/adoreme/geo-tracker/internal/config"
+    adkmodel "google.golang.org/adk/model"
+    "google.golang.org/adk/model/anthropic"
+    "google.golang.org/adk/model/gemini"
+    "google.golang.org/genai"
+)
+
+// NewADKModel returns an ADK model instance for the given model string,
+// using the provider and API key from ADKConfig.
+//
+// provider = "gemini"    → uses google.golang.org/adk/model/gemini
+// provider = "anthropic" → uses google.golang.org/adk/model/anthropic
+//
+// The model string must match the chosen provider's naming convention:
+//   gemini:    "gemini-2.0-flash", "gemini-1.5-pro", etc.
+//   anthropic: "claude-sonnet-4-6", "claude-haiku-4-5-20251001", etc.
+func NewADKModel(ctx context.Context, cfg config.ADKConfig, modelStr string) (adkmodel.Model, error) {
+    switch cfg.Provider {
+    case "gemini":
+        return gemini.NewModel(ctx, modelStr, &genai.ClientConfig{
+            APIKey: cfg.APIKey,
+        })
+    case "anthropic":
+        return anthropic.NewModel(ctx, modelStr, cfg.APIKey)
+    default:
+        return nil, fmt.Errorf("unsupported adk.provider %q: must be 'gemini' or 'anthropic'", cfg.Provider)
+    }
+}
+```
+
+> **Note on the `anthropic` ADK adapter:** As of ADK Go v1.4, the `anthropic` model
+> package in `google.golang.org/adk/model/anthropic` may not be available in Go
+> (it's confirmed for Java/Python). If it is absent, use the `litellm` adapter
+> or route Anthropic calls through the `gemini` package using Vertex AI's
+> Anthropic endpoint. Check `pkg.go.dev/google.golang.org/adk` after Task 0
+> and adjust the import path accordingly. The config contract (`provider` +
+> `api_key` + model string) does not change regardless.
+
+**Verify:** `go build ./internal/adk/...` compiles. Fix import paths if the
+`anthropic` sub-package doesn't exist — use LiteLLM adapter as fallback.
+
+---
+
+### Task 4b — `internal/adk/memory.go` — MySQL session store
+
+Implements the ADK `session.Store` interface so the Strategy Agent remembers
+conversations across HTTP requests.
+
+```go
+package adk
+
+import (
+    "context"
+    "encoding/json"
+    "time"
+
+    "github.com/adoreme/geo-tracker/internal/db"
+    adksession "google.golang.org/adk/session"
+)
+
+// MySQLSessionStore implements adksession.Store using the agent_sessions table.
+type MySQLSessionStore struct {
+    repo *db.ResultsRepo
 }
 
-func (r *ResultRepo) GetLatestVisibilityScore(brand string) (*VisibilityScoreRow, error) {
-    var v VisibilityScoreRow
-    err := r.db.Get(&v, `
-        SELECT vs.*
-        FROM visibility_scores vs
-        JOIN runs ON vs.run_id = runs.id
-        WHERE vs.brand = ? AND runs.status = 'done'
-        ORDER BY runs.started_at DESC
-        LIMIT 1`, brand)
+func NewMySQLSessionStore(repo *db.ResultsRepo) *MySQLSessionStore {
+    return &MySQLSessionStore{repo: repo}
+}
+
+// Implement the adksession.Store interface.
+// Check google.golang.org/adk/session for the exact method signatures —
+// they may be Get/Save/Delete or Load/Save/Delete depending on ADK version.
+//
+// Serialization contract:
+//   - Marshal adksession.Session to JSON for the `data` column.
+//   - Brand is extracted from session.State["brand"] and stored in the brand column
+//     to allow brand-scoped queries.
+//
+// Error handling:
+//   - Not-found: return nil, nil (not an error).
+//   - DB errors: wrap and return.
+```
+
+**Verify:** `go build ./internal/adk/...` compiles.
+
+---
+
+### Task 4c — `internal/adk/tools.go` — Strategy Agent tool functions
+
+Wraps existing DB query functions as ADK callable tools.
+All tool functions are read-only except `mark_recommendation_done`.
+
+```go
+package adk
+
+import (
+    "context"
+
+    "github.com/adoreme/geo-tracker/internal/db"
+    "google.golang.org/adk/tool"
+)
+
+// ToolSet holds tool functions bound to a DB repo instance.
+type ToolSet struct {
+    repo *db.ResultsRepo
+}
+
+func NewToolSet(repo *db.ResultsRepo) *ToolSet {
+    return &ToolSet{repo: repo}
+}
+
+// Tools returns the slice of ADK tools to pass to the Strategy Agent.
+func (t *ToolSet) Tools() []tool.Tool {
+    return []tool.Tool{
+        tool.FromFunc("get_visibility_trend",     t.getVisibilityTrend),
+        tool.FromFunc("get_citation_gaps",        t.getCitationGaps),
+        tool.FromFunc("get_stability_scores",     t.getStabilityScores),
+        tool.FromFunc("get_competitor_share",     t.getCompetitorShare),
+        tool.FromFunc("search_recommendations",   t.searchRecommendations),
+        tool.FromFunc("mark_recommendation_done", t.markRecommendationDone),
+    }
+}
+
+// Each tool function uses a typed args struct and a typed result struct.
+// ADK serializes these automatically — no manual JSON handling.
+
+type VisibilityTrendArgs struct {
+    Brand string `json:"brand" description:"Brand name, e.g. 'Adore Me'"`
+    Limit int    `json:"limit" description:"Number of past runs to return, default 10"`
+}
+type VisibilityTrendResult struct {
+    Points []db.TrendPoint `json:"points"`
+}
+func (t *ToolSet) getVisibilityTrend(ctx context.Context, args VisibilityTrendArgs) (VisibilityTrendResult, error)
+
+type CitationGapArgs struct {
+    Brand string `json:"brand"`
+    RunID uint64 `json:"run_id" description:"Run ID to analyse. Use 0 for latest run."`
+}
+type CitationGapResult struct {
+    Gaps []db.CitationGapEntry `json:"gaps"`
+}
+func (t *ToolSet) getCitationGaps(ctx context.Context, args CitationGapArgs) (CitationGapResult, error)
+
+type StabilityArgs struct {
+    Brand string `json:"brand"`
+    RunID uint64 `json:"run_id"`
+}
+type StabilityResult struct {
+    Scores []db.StabilityScore `json:"scores"`
+}
+func (t *ToolSet) getStabilityScores(ctx context.Context, args StabilityArgs) (StabilityResult, error)
+
+type CompetitorShareArgs struct {
+    Brand string `json:"brand"`
+    RunID uint64 `json:"run_id"`
+}
+type CompetitorShareResult struct {
+    Competitors []db.CompetitorCount `json:"competitors"`
+}
+func (t *ToolSet) getCompetitorShare(ctx context.Context, args CompetitorShareArgs) (CompetitorShareResult, error)
+
+type SearchRecsArgs struct {
+    Brand  string `json:"brand"`
+    Status string `json:"status" description:"'pending', 'implemented', or '' for all"`
+}
+type SearchRecsResult struct {
+    Recommendations []db.Recommendation `json:"recommendations"`
+}
+func (t *ToolSet) searchRecommendations(ctx context.Context, args SearchRecsArgs) (SearchRecsResult, error)
+
+type MarkDoneArgs struct {
+    RecommendationID int64 `json:"recommendation_id"`
+}
+type MarkDoneResult struct {
+    Success bool   `json:"success"`
+    Message string `json:"message"`
+}
+func (t *ToolSet) markRecommendationDone(ctx context.Context, args MarkDoneArgs) (MarkDoneResult, error)
+```
+
+**Verify:** `go build ./internal/adk/...` compiles.
+
+---
+
+### Task 4d — `internal/adk/agents.go` — LlmAgent definitions
+
+Three agents. All use `NewADKModel()` from `model.go` — switching provider is
+one config line, zero code changes.
+
+```go
+package adk
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    "github.com/adoreme/geo-tracker/internal/config"
+    "github.com/adoreme/geo-tracker/internal/db"
+    "google.golang.org/adk/agent/llmagent"
+    adkrunner "google.golang.org/adk/runner"
+    adksession "google.golang.org/adk/session"
+)
+
+// ─── Explainer Agent ────────────────────────────────────────────────────────
+
+// ExplainerAgent generates a plain-English diff explanation between two runs.
+// Uses the model from cfg.ADK.ExplainerModel.
+// No tools — all context is passed in the prompt.
+// Returns structured JSON parsed into an Explanation.
+type ExplainerAgent struct {
+    runner *adkrunner.Runner
+}
+
+func NewExplainerAgent(ctx context.Context, cfg config.ADKConfig) (*ExplainerAgent, error) {
+    model, err := NewADKModel(ctx, cfg, cfg.ExplainerModel)
+    if err != nil {
+        return nil, fmt.Errorf("explainer model: %w", err)
+    }
+    a, err := llmagent.New(llmagent.Config{
+        Name:        "lighthouse_explainer",
+        Model:       model,
+        Instruction: explainerSystemPrompt,
+    })
     if err != nil {
         return nil, err
     }
-    return &v, nil
+    r := adkrunner.New(a, adksession.NewInMemoryStore(), nil)
+    return &ExplainerAgent{runner: r}, nil
 }
-```
 
-**Step 3 — Wire into `cmd/run.go` after the stability scoring loop:**
+// Explain builds a structured prompt from req, calls the LlmAgent,
+// and parses the JSON response into an Explanation.
+func (e *ExplainerAgent) Explain(ctx context.Context, req ExplainRequest) (Explanation, error)
 
-Find the comment block `// 2. Explainer & Recommender` and insert before it:
+// ExplainRequest and Explanation types stay in internal/agent/explainer.go
+// (imported here) so cmd/ code referencing them doesn't need to change.
 
-```go
-// 3. Calculate and persist visibility scores (organic only, per brand)
-for _, b := range brands {
-    var brandResults []db.Result
-    for _, r := range results {
-        if r.Brand == b && r.Category != "comparison" {
-            brandResults = append(brandResults, r)
-        }
-    }
-    stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
-    vScore := scoring.CalcVisibilityScore(b, int64(run.ID), brandResults, stabilityScores)
-    if err := resultRepo.InsertVisibilityScore(&db.VisibilityScoreRow{
-        RunID:            run.ID,
-        Brand:            b,
-        Score:            vScore.Score,
-        MentionRate:      vScore.MentionRate,
-        FirstRecRate:     vScore.FirstRecRate,
-        SentimentScore:   vScore.SentimentScore,
-        CitationScore:    vScore.CitationScore,
-        StabilityScore:   vScore.StabilityScore,
-        ProviderCoverage: vScore.ProviderCoverage,
-    }); err != nil {
-        logger.Error("failed to insert visibility score", zap.String("brand", b), zap.Error(err))
-    }
+const explainerSystemPrompt = `You are a GEO (Generative Engine Optimization) analyst for the Victoria's Secret brand family.
+You receive structured data showing how brand visibility changed between two AI tracking runs.
+Respond ONLY with a valid JSON object — no markdown fences, no explanation outside the JSON:
+{"summary": "2-3 sentence plain-English explanation of what changed and why", "drivers": ["specific factor 1", "specific factor 2"]}
+Reference concrete numbers, specific prompt categories, and named competitors. Never be vague.`
+
+// ─── Recommender Agent ──────────────────────────────────────────────────────
+
+// RecommenderAgent generates 3-5 prioritised GEO actions from run data.
+// Uses the model from cfg.ADK.RecommenderModel.
+// No tools — all context is passed in the prompt.
+// Returns a JSON array parsed into []db.Recommendation.
+type RecommenderAgent struct {
+    runner *adkrunner.Runner
 }
-```
 
-**Step 4 — Also collect stabilityScores for the printFancySummary call** (currently it passes an empty slice). After the loop above, update `printFancySummary` to pass the actual stability scores so the stdout output also reflects real numbers.
-
-**Verify:** After `geo-tracker run`, run `SELECT * FROM visibility_scores;` — should have one row per brand with a non-zero score.
-
----
-
-### `BE-02` · Fix: `GET /api/brands/:brand/summary` must return `visibility_score` from DB
-
-**Problem:** The summary handler recomputes metrics from raw results on every request but never returns `visibility_score`. The frontend reads `data.visibility_score` and gets `undefined` → renders 0.0.
-
-**File:** `internal/api/handlers.go`
-
-In `GetSummary`, after fetching the organic summary data, also fetch the stored visibility score and merge it into the response:
-
-```go
-func (h *Handlers) GetSummary(w http.ResponseWriter, r *http.Request) {
-    brandRaw := chi.URLParam(r, "brand")
-    brand := resolveBrand(brandRaw)
-    repo := db.NewResultRepo(h.db)
-
-    runID, err := repo.GetLatestRunID()
+func NewRecommenderAgent(ctx context.Context, cfg config.ADKConfig) (*RecommenderAgent, error) {
+    model, err := NewADKModel(ctx, cfg, cfg.RecommenderModel)
     if err != nil {
-        sendError(w, http.StatusNotFound, "no runs found", "NO_RUNS")
-        return
+        return nil, fmt.Errorf("recommender model: %w", err)
     }
-
-    summary, err := repo.GetOrganicSummary(brand, int64(runID))
+    a, err := llmagent.New(llmagent.Config{
+        Name:        "lighthouse_recommender",
+        Model:       model,
+        Instruction: recommenderSystemPrompt,
+    })
     if err != nil {
-        sendError(w, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR")
-        return
+        return nil, err
     }
-
-    // Fetch stored visibility score (computed by run command, not recomputed here)
-    vscore, err := repo.GetLatestVisibilityScore(brand)
-    if err == nil && vscore != nil {
-        summary.VisibilityScore = vscore.Score
-        summary.FirstRecRate = vscore.FirstRecRate
-        summary.CitationScore = vscore.CitationScore
-        summary.StabilityScore = vscore.StabilityScore
-        summary.ProviderCoverage = vscore.ProviderCoverage
-    }
-
-    summary.PromptType = "organic"
-    sendJSON(w, http.StatusOK, summary)
+    r := adkrunner.New(a, adksession.NewInMemoryStore(), nil)
+    return &RecommenderAgent{runner: r}, nil
 }
-```
 
-Make sure `BrandSummary` struct in `internal/db/results.go` has all these fields:
+func (r *RecommenderAgent) Recommend(ctx context.Context, req RecommendationRequest) ([]db.Recommendation, error)
 
-```go
-type BrandSummary struct {
-    Brand            string             `db:"-"    json:"brand"`
-    PromptType       string             `db:"-"    json:"prompt_type"`
-    RunID            int64              `db:"run_id"          json:"run_id"`
-    VisibilityScore  float64            `db:"-"               json:"visibility_score"`
-    MentionRate      float64            `db:"mention_rate"    json:"mention_rate"`
-    FirstRecRate     float64            `db:"-"               json:"first_rec_rate"`
-    SentimentScore   float64            `db:"sentiment_score" json:"sentiment_score"`
-    CitationScore    float64            `db:"-"               json:"citation_score"`
-    StabilityScore   float64            `db:"-"               json:"stability_score"`
-    ProviderCoverage float64            `db:"-"               json:"provider_coverage"`
-    ProviderRates    map[string]float64 `db:"-"               json:"provider_rates"`
+const recommenderSystemPrompt = `You are a GEO strategist for the Victoria's Secret brand family (Adore Me + Victoria's Secret).
+You receive structured visibility data: mention rates, citation gaps, stability scores, competitor share.
+Return ONLY a JSON array of 3-5 prioritised actions. Each action must reference specific data from the input.
+No markdown. No preamble. Only the JSON array.
+Shape: [{"priority":1,"category":"fit","action":"...","expected_impact":"...","rationale":"..."}]`
+
+// ─── Strategy Agent ─────────────────────────────────────────────────────────
+
+// StrategyAgent is a conversational agent with 6 DB-backed tools and persistent
+// session memory. Powers the /api/strategy/chat SSE endpoint.
+// Uses the model from cfg.ADK.StrategyModel.
+type StrategyAgent struct {
+    agent        *llmagent.Agent
+    sessionStore *MySQLSessionStore
+    runner       *adkrunner.Runner
 }
-```
 
-**Verify:** `curl localhost:8080/api/brands/adore-me/summary | jq .visibility_score` — should return a non-zero number.
-
----
-
-### `BE-03` · Fix: Stability scores not flowing into visibility score (empty slice bug)
-
-**Problem:** In `printFancySummary`, `brandStability` is declared but never populated — it stays nil. The stability component of the visibility score is always 0. The `// ... logic to aggregate ...` comment was never implemented.
-
-**File:** `cmd/run.go` — in `printFancySummary`, populate `brandStability` before calling `CalcVisibilityScore`:
-
-```go
-// Replace the // ... logic to aggregate ... comment with:
-for _, pr := range providersList {
-    for _, p := range prompts {
-        var promptSamples []db.Result
-        for _, r := range brandResults {
-            if r.Provider == pr.Name() && r.PromptID == p.ID {
-                promptSamples = append(promptSamples, r)
-            }
-        }
-        if len(promptSamples) > 0 {
-            score := scoring.CalcStabilityScore(promptSamples)
-            brandStability = append(brandStability, score)
-        }
-    }
-}
-```
-
-Note: `printFancySummary` is display-only. The real fix is `BE-01` which stores stability before computing visibility. This task just fixes the stdout summary table to also show correct numbers.
-
-**Verify:** After a run, the stdout table should show non-zero scores in the Score column.
-
----
-
-### `BE-04` · Fix: Recommender agent called with empty data (produces generic output)
-
-**Problem:** In `cmd/run.go`, `agent.Recommend()` is called with only `Brand` and `RunID` — no organic summary, no citation gaps, no weak categories. The recommender has no data to work with and produces generic recommendations that aren't specific to the current run.
-
-**File:** `cmd/run.go` — find the recommender call and enrich the request:
-
-```go
-for _, b := range brands {
-    // Fetch data the recommender needs
-    organicSummary, _ := resultRepo.GetOrganicSummary(b, int64(run.ID))
-    citationGaps, _ := resultRepo.GetCitationGap(b, run.ID)
-    stabilityScores, _ := resultRepo.GetStabilityScores(run.ID, b)
-    competitors, _ := resultRepo.GetTopCompetitors(b, run.ID, 5)
-
-    recReq := agent.RecommendationRequest{
-        Brand:           b,
-        RunID:           run.ID,
-        OrganicSummary:  organicSummary,
-        CitationGaps:    citationGaps,
-        StabilityScores: stabilityScores,
-        TopCompetitors:  competitors,
-    }
-    recs, err := agent.Recommend(context.Background(), recReq)
+func NewStrategyAgent(
+    ctx context.Context,
+    cfg config.ADKConfig,
+    tools *ToolSet,
+    store *MySQLSessionStore,
+) (*StrategyAgent, error) {
+    model, err := NewADKModel(ctx, cfg, cfg.StrategyModel)
     if err != nil {
-        logger.Error("recommender failed", zap.String("brand", b), zap.Error(err))
-        continue
+        return nil, fmt.Errorf("strategy model: %w", err)
     }
-    for i := range recs {
-        rec := &db.Recommendation{
-            RunID:          run.ID,
-            Brand:          b,
-            Category:       recs[i].Category,
-            Action:         recs[i].Action,
-            ExpectedImpact: recs[i].ExpectedImpact,
-            Rationale:      recs[i].Rationale,
-            Status:         "pending",
-        }
-        if insertErr := resultRepo.InsertRecommendation(rec); insertErr != nil {
-            logger.Error("failed to insert recommendation", zap.Error(insertErr))
-        }
-    }
-}
-```
-
-**File:** `internal/agent/recommender.go` — ensure the prompt passed to Claude Sonnet includes all the request data. The prompt must explicitly ask for 3-5 specific actions. Update the system prompt to:
-
-```go
-const recommenderSystemPrompt = `You are a GEO (Generative Engine Optimization) strategist.
-You will receive brand visibility data from AI chatbot analysis.
-Return ONLY a JSON array of 3-5 recommendation objects. No markdown fences. No preamble.
-
-Each object must have:
-{
-  "category": "fit|purchase|discovery|gifting|comparison",
-  "action": "specific actionable task (1-2 sentences)",
-  "expected_impact": "estimated Visibility Score change and timeframe",
-  "rationale": "cite specific data from the input (competitor name, domain, category gap)",
-  "priority": 1
-}
-
-Priority 1 = highest impact. Actions must reference specific data points from the input.
-Never produce generic advice. Every action must name a specific category, competitor, or domain.`
-```
-
-**Verify:** After a run, `SELECT COUNT(*) FROM recommendations;` should return 3-5 rows with specific, data-driven action text.
-
----
-
-### `BE-05` · Fix: Runs table missing `started_at` / `duration` (shows N/A in UI)
-
-**Problem:** The Runs page shows "N/A" for the time column. The `started_at` field is not being set when the run record is created.
-
-**File:** `cmd/run.go` — when creating the run record, set `started_at` explicitly:
-
-```go
-run := db.Run{
-    Status:    "running",
-    StartedAt: time.Now(), // add this
-    Brand:     strings.Join(brands, ","),
-}
-```
-
-**File:** `internal/db/schema.sql` — verify `runs` table has:
-
-```sql
-started_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-completed_at DATETIME NULL,
-duration_seconds INT NULL,
-```
-
-**File:** `internal/db/results.go` — verify `UpdateRunStatus` sets `completed_at` and calculates duration:
-
-```go
-func (r *ResultRepo) UpdateRunStatus(id uint64, status string, cost float64) error {
-    _, err := r.db.Exec(`
-        UPDATE runs
-        SET status = ?,
-            total_cost_usd = ?,
-            completed_at = NOW(),
-            duration_seconds = TIMESTAMPDIFF(SECOND, started_at, NOW())
-        WHERE id = ?`, status, cost, id)
-    return err
-}
-```
-
-**File:** `internal/api/handlers.go` — ensure `GetRuns` returns `started_at`, `completed_at`, and `duration_seconds` in the JSON response.
-
-**Verify:** After a run, `SELECT started_at, completed_at, duration_seconds FROM runs;` — all three columns should be populated.
-
----
-
-### `FE-01` · Fix: Dashboard does not render `ExplainabilityPanel` or `LiveRunButton`
-
-**Problem:** Two of the highest-impact demo components are not wired into `app/dashboard/page.tsx`. The spec requires `ExplainabilityPanel` (shows what changed and why) and `LiveRunButton` (floating button, fires a prompt live via SSE).
-
-**File:** `app/dashboard/page.tsx`
-
-Import and add both components. The full required layout is:
-
-```tsx
-import { ExplainabilityPanel } from '@/components/dashboard/ExplainabilityPanel'
-import { LiveRunButton } from '@/components/dashboard/LiveRunButton'
-
-// Inside the page, after CitationGapTable and PromptResultsTable:
-{latestRunId && (
-  <ExplainabilityPanel brand={brand} runId={latestRunId} />
-)}
-
-// Floating LiveRunButton — add at the bottom of the page, outside the main content div:
-<LiveRunButton brand={brand} />
-```
-
-To get `latestRunId`, fetch it from the summary data:
-
-```tsx
-const { data: summary } = useSummary(brand)
-const latestRunId = summary?.run_id ?? null
-```
-
-**Verify:** Reload the dashboard — the explainability panel should appear below the charts (or show nothing gracefully if no explanation exists for this run). The "Run Now" button should appear floating at bottom-right.
-
----
-
-### `FE-02` · Fix: `VisibilityScoreCard` reads `visibility_score` field correctly
-
-**Problem:** With the old API response missing `visibility_score`, the card renders 0.0. Now that `BE-02` adds it to the API response, verify the frontend is reading the right field name.
-
-**File:** `lib/types.ts` — ensure `BrandSummary` interface has:
-
-```ts
-export interface BrandSummary {
-  brand: string
-  prompt_type: 'organic'
-  run_id: number
-  run_at: string
-  visibility_score: number    // ← must match backend JSON key exactly
-  mention_rate: number
-  first_rec_rate: number
-  sentiment_score: number
-  citation_score: number
-  stability_score: number
-  provider_coverage: number
-  provider_rates: Record<string, number>
-}
-```
-
-**File:** `components/dashboard/VisibilityScoreCard.tsx` — verify it reads `summary.visibility_score`, not `summary.score` or any other key.
-
-**File:** `components/dashboard/MetricsRow.tsx` — verify the four KPI cards read:
-- `summary.mention_rate` for Mention Rate
-- `summary.first_rec_rate` for First Rec Rate
-- `summary.sentiment_score` for Sentiment Score
-- `summary.stability_score` for Stability Score
-
-**Verify:** Dashboard loads and shows the real composite score (should be ~10-15 with 31% mention rate).
-
----
-
-### `FE-03` · Fix: `HeadToHeadSection` missing from dashboard page
-
-**Problem:** The head-to-head comparison section is not rendered on the dashboard. Per spec it is conditionally shown — only when comparison data exists.
-
-**File:** `app/dashboard/page.tsx`
-
-Add after the `ExplainabilityPanel`:
-
-```tsx
-import { HeadToHeadSection } from '@/components/dashboard/HeadToHeadSection'
-
-// HeadToHeadSection handles its own data fetching and renders nothing if no data
-<HeadToHeadSection brand={brand} />
-```
-
-`HeadToHeadSection` internally calls `useComparisonSummary(brand)` and renders nothing if the response is null or returns `NO_COMPARISON_DATA` error. No conditional needed in the page itself.
-
-**Verify:** If comparison prompts exist in the DB, the section appears. If not, nothing renders — no error, no empty state.
-
----
-
-## P1 — Demo is weak without these
-
----
-
-### `BE-06` · Fix: VS sentiment score always 0.0
-
-**Problem:** Compare page shows Victoria's Secret sentiment as 0.0. The extraction agent extracts sentiment correctly per brand, but the aggregation query may be using the wrong brand name string for VS — likely `"Victoria's Secret"` vs `"Victoria's Secret"` encoding mismatch or the `resolveBrand` function not handling the VS alias.
-
-**File:** `internal/api/handlers.go` — verify `resolveBrand`:
-
-```go
-func resolveBrand(raw string) string {
-    switch strings.ToLower(strings.ReplaceAll(raw, "-", " ")) {
-    case "adore me":
-        return "Adore Me"
-    case "victorias secret", "victoria's secret", "victoria secret":
-        return "Victoria's Secret"
-    default:
-        return raw
-    }
-}
-```
-
-**File:** `internal/db/results.go` — in `GetOrganicSummary`, verify the sentiment aggregation query uses the brand parameter as a WHERE clause, not hardcoded:
-
-```sql
-WHERE r.run_id = :run_id
-  AND r.brand  = :brand        -- must match exactly what is stored in results table
-  AND p.category != 'comparison'
-```
-
-Run `SELECT DISTINCT brand FROM results;` to confirm the exact brand strings being stored, then make sure `resolveBrand` returns those exact strings.
-
-**Verify:** `curl "localhost:8080/api/brands/victorias-secret/summary" | jq .sentiment_score` — should return a non-zero value.
-
----
-
-### `BE-07` · Add: `GET /api/explain/:run_id` endpoint
-
-**Problem:** The `ExplainabilityPanel` frontend component calls `GET /api/explain/:run_id?brand=X` but this endpoint may not be wired in the chi router.
-
-**File:** `internal/api/server.go` — verify the route is registered:
-
-```go
-r.Get("/api/explain/{run_id}", h.GetExplain)
-```
-
-**File:** `internal/api/handlers.go` — add the handler if missing:
-
-```go
-func (h *Handlers) GetExplain(w http.ResponseWriter, r *http.Request) {
-    runIDStr := chi.URLParam(r, "run_id")
-    runID, _ := strconv.ParseUint(runIDStr, 10, 64)
-    brand := resolveBrand(r.URL.Query().Get("brand"))
-
-    repo := db.NewResultRepo(h.db)
-    explanation, err := repo.GetExplanation(runID, brand)
+    a, err := llmagent.New(llmagent.Config{
+        Name:        "lighthouse_strategy",
+        Model:       model,
+        Instruction: strategySystemPrompt,
+        Tools:       tools.Tools(),
+    })
     if err != nil {
-        sendError(w, http.StatusNotFound, "no explanation found", "NOT_FOUND")
-        return
+        return nil, err
     }
-    sendJSON(w, http.StatusOK, explanation)
+    r := adkrunner.New(a, store, nil)
+    return &StrategyAgent{agent: a, sessionStore: store, runner: r}, nil
 }
+
+// Chat sends one user message and streams the agent response as SSE chunks.
+// sessionID is brand-scoped (one per brand per UI session).
+// Returns a channel of ChatEvent for the SSE handler to forward.
+func (s *StrategyAgent) Chat(ctx context.Context, sessionID, brand, message string) (<-chan ChatEvent, error)
+
+// ChatEvent is one SSE payload sent to the frontend.
+type ChatEvent struct {
+    Type       string `json:"type"`        // "chunk" | "tool_call" | "tool_result" | "done" | "error"
+    Text       string `json:"text,omitempty"`
+    Tool       string `json:"tool,omitempty"`
+    Args       any    `json:"args,omitempty"`
+    Preview    string `json:"preview,omitempty"` // short human-readable summary of tool result
+    Error      string `json:"error,omitempty"`
+}
+
+const strategySystemPrompt = `You are the Lighthouse Strategy Agent — a GEO intelligence assistant for the Adore Me and Victoria's Secret brand team.
+You have access to real visibility data through your tools. Always call the relevant tool before answering data questions — never guess.
+Be specific: cite actual scores, actual domains, actual category names from data you retrieve.
+When asked what to prioritise, call get_citation_gaps and get_visibility_trend first, then reason over both.
+When asked about a past recommendation, call search_recommendations before responding.
+You remember the conversation history in this session — refer back to decisions made earlier when relevant.
+Keep responses concise and actionable. The team reading this is technical and time-pressured.`
 ```
 
-**File:** `internal/db/results.go` — add `GetExplanation` query against the `explanations` table (verify this table exists in schema.sql; add it if not):
-
-```sql
-CREATE TABLE IF NOT EXISTS explanations (
-    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    run_id      BIGINT UNSIGNED NOT NULL,
-    brand       VARCHAR(255) NOT NULL,
-    summary     TEXT NOT NULL,
-    drivers     JSON NULL,
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_run_brand (run_id, brand)
-);
-```
-
-**Verify:** After a run, `SELECT summary FROM explanations LIMIT 1;` should return non-empty text. The ExplainabilityPanel should render it.
+**Verify:** `go build ./internal/adk/...` compiles. No LLM calls happen at construction time.
 
 ---
 
-### `BE-08` · Fix: Recommendations response shape missing `priority` field
+### Task 4e — `internal/adk/pipeline.go` — the orchestration core
 
-**Problem:** The recommendations page sorts by `rec.priority` in the frontend, but the `Recommendation` DB struct and the recommender agent output may not be storing the `priority` field. The result is all recommendations sort identically (priority 0).
-
-**File:** `internal/db/results.go` — add `priority` to the `Recommendation` struct:
+Replaces `internal/runner/runner.go`. The goroutine pool logic moves into
+Phase 1 of this file. Phases 2 and 3 use `errgroup` for clean parallel execution.
 
 ```go
-type Recommendation struct {
-    ID             uint64     `db:"id"             json:"id"`
-    RunID          uint64     `db:"run_id"          json:"run_id"`
-    Brand          string     `db:"brand"           json:"brand"`
-    Priority       int        `db:"priority"        json:"priority"`   // ← add this
-    Category       string     `db:"category"        json:"category"`
-    Action         string     `db:"action"          json:"action"`
-    ExpectedImpact string     `db:"expected_impact" json:"expected_impact"`
-    Rationale      string     `db:"rationale"       json:"rationale"`
-    Status         string     `db:"status"          json:"status"`
-    ImplementedAt  *time.Time `db:"implemented_at"  json:"implemented_at"`
-    CreatedAt      time.Time  `db:"created_at"      json:"created_at"`
+package adk
+
+import (
+    "context"
+    "sync"
+    "time"
+
+    "github.com/adoreme/geo-tracker/internal/config"
+    "github.com/adoreme/geo-tracker/internal/db"
+    "github.com/adoreme/geo-tracker/internal/providers"
+    "github.com/adoreme/geo-tracker/internal/scoring"
+    "github.com/adoreme/geo-tracker/internal/agent"
+    "go.uber.org/zap"
+    "golang.org/x/sync/errgroup"
+)
+
+// PipelineResult is the full output of one pipeline execution.
+type PipelineResult struct {
+    RunID            uint64
+    Results          []db.Result
+    StabilityScores  []db.StabilityScore
+    VisibilityScores map[string]float64           // brand → score
+    Explanations     map[string]agent.Explanation  // brand → explanation
+    Recommendations  []db.Recommendation
+    Traces           []db.RunTrace
+    TotalCostUSD     float64
 }
+
+// Pipeline orchestrates the three phases of a Lighthouse run.
+type Pipeline struct {
+    cfg          config.Config
+    repo         *db.ResultsRepo
+    providers    []providers.Provider
+    explainer    *ExplainerAgent
+    recommender  *RecommenderAgent
+    logger       *zap.Logger
+}
+
+func NewPipeline(
+    cfg config.Config,
+    repo *db.ResultsRepo,
+    providers []providers.Provider,
+    explainer *ExplainerAgent,
+    recommender *RecommenderAgent,
+    logger *zap.Logger,
+) *Pipeline
+
+// Run executes all three phases and returns the full result.
+// All DB writes happen inside Run — cmd/run.go only calls Run and prints the summary.
+//
+// ── Phase 1: PROBE (parallel) ────────────────────────────────────────────────
+//   Fan out all prompt × provider × brand × sample jobs using a goroutine worker pool.
+//   Worker count: cfg.Runner.Workers
+//   Rate limit:   cfg.Runner.RateLimitPerMinute (time.Ticker)
+//   Each job: provider.Probe() → write db.Result row immediately (not batched)
+//   Trace: one RunTrace row per provider group (claude, chatgpt, perplexity, gemini)
+//
+// ── Phase 2: INTELLIGENCE (parallel via errgroup) ────────────────────────────
+//   A. Extraction: for each result row without a GEOSignal, call agent.Extract()
+//      and update the row. Uses cfg.Providers.Claude or cfg.Providers.Gemini
+//      for the extract call (unchanged from current runner.go logic).
+//   B. Stability scoring: call scoring.CalcStabilityScore per prompt×provider×brand group.
+//   A and B run concurrently. Both write to DB on completion.
+//   Trace: one RunTrace row each for "extractor" and "stability_scorer".
+//
+// ── Phase 3: INSIGHT (parallel via errgroup, per brand) ──────────────────────
+//   A. Explainer: fetch previous run, build ExplainRequest, call ExplainerAgent.Explain().
+//      Store result in runs.explanation_json (add column if not present) and log it.
+//   B. Recommender: fetch citation gaps + stability + competitors, call
+//      RecommenderAgent.Recommend(). Insert rows into recommendations table.
+//   A and B run concurrently per brand.
+//   Trace: one RunTrace row each for "explainer" and "recommender".
+//
+func (p *Pipeline) Run(ctx context.Context, run db.Run, prompts []db.Prompt) (PipelineResult, error)
+
+// traceStart inserts a run_trace row with status="running" and returns it.
+func (p *Pipeline) traceStart(ctx context.Context, runID uint64, phase, agentName string) *db.RunTrace
+
+// traceEnd updates the run_trace row with finished_at, duration_ms, and status.
+// Pass err=nil for success, non-nil for error.
+func (p *Pipeline) traceEnd(ctx context.Context, trace *db.RunTrace, err error)
 ```
 
-**File:** `internal/db/schema.sql` — add `priority` column to recommendations table:
+**Verify:** `go build ./internal/adk/...` compiles. Run `go vet ./internal/adk/...` and fix any issues.
 
-```sql
-priority        INT NOT NULL DEFAULT 1,
-```
+---
 
-**File:** `internal/db/results.go` — update `InsertRecommendation` to include `priority` in the INSERT:
+## Task 5 — Update `internal/agent/explainer.go`
 
-```sql
-INSERT INTO recommendations (run_id, brand, priority, category, action, expected_impact, rationale, status)
-VALUES (:run_id, :brand, :priority, :category, :action, :expected_impact, :rationale, :status)
-```
+Keep all existing types (`ExplainRequest`, `PromptDiff`, `Explanation`) exactly as-is —
+they are referenced by `cmd/run.go` and must not change signatures.
 
-**File:** `cmd/run.go` — when calling `InsertRecommendation`, map the `Priority` field from the agent response:
+Replace only the `Explain` function body. It now delegates to `ExplainerAgent`:
 
 ```go
-rec := &db.Recommendation{
-    RunID:          run.ID,
-    Brand:          b,
-    Priority:       recs[i].Priority,   // ← add this
-    Category:       recs[i].Category,
-    Action:         recs[i].Action,
-    ExpectedImpact: recs[i].ExpectedImpact,
-    Rationale:      recs[i].Rationale,
-    Status:         "pending",
+// Explain is now a thin delegate. The agent is injected, not constructed here.
+// Types (ExplainRequest, Explanation) stay in this file unchanged.
+func Explain(ctx context.Context, req ExplainRequest, a *adkpkg.ExplainerAgent) (Explanation, error) {
+    return a.Explain(ctx, req)
 }
 ```
 
-**Verify:** `SELECT priority, action FROM recommendations ORDER BY priority;` — should show 3-5 rows with distinct priority values 1 through N.
+Remove the TODO stub body and the placeholder return.
+
+**Verify:** `go build ./internal/agent/...` compiles.
 
 ---
 
-### `FE-04` · Fix: `PromptResultsTable` missing from dashboard
+## Task 6 — Update `internal/agent/recommender.go`
 
-**Problem:** The dashboard layout in the spec includes a per-prompt results table showing which providers mentioned the brand. It is not being rendered in the current dashboard page.
+Same pattern as Task 5.
 
-**File:** `app/dashboard/page.tsx`
-
-Add after `CitationGapTable`:
-
-```tsx
-import { PromptResultsTable } from '@/components/dashboard/PromptResultsTable'
-
-// Fetch prompt results for the latest run
-const { data: promptResults } = useRunDetail(latestRunId ?? 0)
-
-{promptResults && promptResults.length > 0 && (
-  <PromptResultsTable prompts={promptResults} />
-)}
-```
-
-**File:** `hooks/useRunDetail.ts` — verify it is wired to `GET /api/runs/:id/results` and returns the right type. Skip rendering if `latestRunId` is null.
-
-**Verify:** Dashboard shows a table of prompts with provider hit/miss indicators per row.
-
----
-
-### `FE-05` · Improve: Trend chart empty state
-
-**Problem:** With only one run in the DB, the trend chart shows a single floating dot with no context. It needs a clear message rather than a near-empty chart.
-
-**File:** `components/charts/TrendChart.tsx`
-
-Add a guard before the Recharts render:
-
-```tsx
-if (!data || data.length < 2) {
-  return (
-    <div className="bg-white rounded-3xl border border-slate-200 p-8 flex flex-col items-center justify-center h-64 gap-3">
-      <p className="text-sm font-bold text-slate-900">Mention Trend</p>
-      <p className="text-xs text-slate-400 text-center max-w-48">
-        Trend appears after 2+ runs. Run the pipeline again tomorrow to see movement.
-      </p>
-      {data?.length === 1 && (
-        <p className="text-2xl font-black text-indigo-600">{data[0].mention_rate.toFixed(1)}%</p>
-      )}
-    </div>
-  )
+```go
+func Recommend(ctx context.Context, req RecommendationRequest, a *adkpkg.RecommenderAgent) ([]db.Recommendation, error) {
+    return a.Recommend(ctx, req)
 }
 ```
 
-**Verify:** Dashboard loads cleanly with one data point — shows the current mention rate and an explanatory message instead of a lonely dot.
+Remove the TODO stub body and the hardcoded placeholder recommendation.
+
+**Verify:** `go build ./internal/agent/...` compiles.
 
 ---
 
-### `BE-09` · Add: Seed 45 more prompts to `prompts/seed.yaml`
+## Task 7 — Update `cmd/run.go`
 
-**Problem:** Only 5 prompts exist. Statistical signal is too thin for meaningful visibility scoring. The spec requires 50 prompts across 5 categories.
+This is the cutover. Replace the manual orchestration block with a single pipeline call.
 
-**File:** `prompts/seed.yaml`
+### 7a — Construct ADK components (once, before cobra RunE)
 
-The 5 existing prompts cover: 1 purchase, 1 comparison, 1 discovery, 1 purchase, 1 fit. Add the following to reach the full 50. Write each as a real customer query to an AI chatbot — conversational, not formal. No brand names in organic prompts.
-
-Required counts to add:
-- `purchase`: add 13 more (to reach 15 total)
-- `discovery`: add 9 more (to reach 10 total)
-- `fit`: add 9 more (to reach 10 total)
-- `comparison`: add 9 more (to reach 10 total — brand names ARE allowed here)
-- `gifting`: add 5 new
-
-Example format:
-```yaml
-prompts:
-  - text: "Where can I find a good wireless bra that doesn't dig in?"
-    category: purchase
-  - text: "What are the most comfortable everyday bras right now?"
-    category: purchase
-  - text: "I need a bra for my wide rib cage but small cup, any suggestions?"
-    category: fit
-  - text: "Which is better for everyday comfort, Adore Me or ThirdLove?"
-    category: comparison
-  - text: "What lingerie brands are actually sustainable in 2026?"
-    category: discovery
-  - text: "Good lingerie gift ideas for my wife who just had a baby?"
-    category: gifting
+```go
+// After cfg and resultRepo are initialised, before RunE is defined:
+explainerAgent, err := adkpkg.NewExplainerAgent(ctx, cfg.ADK)
+if err != nil {
+    logger.Fatal("explainer agent init failed", zap.Error(err))
+}
+recommenderAgent, err := adkpkg.NewRecommenderAgent(ctx, cfg.ADK)
+if err != nil {
+    logger.Fatal("recommender agent init failed", zap.Error(err))
+}
 ```
 
-After editing the file, re-import: `geo-tracker prompts import prompts/seed.yaml`
+### 7b — Replace the RunAll block inside RunE
 
-**Verify:** `geo-tracker prompts list` shows 50 active prompts across 5 categories.
+**Remove this block (current code):**
+```go
+rn := runner.NewRunner(*cfg, logger)
+results := rn.RunAll(ctx, prompts, enabledProviders, brands)
+// ... manual result insert loop
+// ... manual stability score triple-nested loop
+// ... manual explainer/recommender calls per brand
+```
+
+**Replace with:**
+```go
+pipe := adkpkg.NewPipeline(*cfg, resultRepo, enabledProviders, explainerAgent, recommenderAgent, logger)
+pipeResult, err := pipe.Run(ctx, run, prompts)
+if err != nil && exitCode {
+    os.Exit(1)
+}
+// Results, stability scores, explanations, recommendations already written to DB by pipeline.
+// Just update run status and print summary:
+resultRepo.UpdateRunStatus(run.ID, "done", pipeResult.TotalCostUSD)
+printFancySummary(run.ID, pipeResult)
+```
+
+**Verify:** `go run . run --dry-run` completes without panic. All three pipeline phases should log to stdout.
 
 ---
 
-### `BE-10` · Add: Generate and commit demo baseline dataset
+## Task 8 — Update `cmd/serve.go`
 
-**Problem:** With only one run and no historical data, the trend chart has one point and the explainability panel has nothing to diff. A pre-baked second run from "yesterday" solves both.
+Construct the Strategy Agent and inject it into the API handler.
 
-**Steps:**
-
-1. Run `geo-tracker run` to completion (this is the second run — your current data is already run #1)
-2. If you need to simulate historical data, insert a fake earlier run directly:
-
-```sql
--- Insert a fake run from yesterday for trend demonstration
-INSERT INTO runs (status, started_at, completed_at, duration_seconds, total_cost_usd)
-VALUES ('done', DATE_SUB(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 23 HOUR 55 MINUTE), 290, 0.48);
-
--- Use the new run ID (e.g. 0) to backfill visibility scores with slightly lower numbers
--- to show upward trend movement:
-INSERT INTO visibility_scores (run_id, brand, score, mention_rate, first_rec_rate, sentiment_score, citation_score, stability_score, provider_coverage)
-VALUES
-  (0, 'Adore Me',          22.4, 24.2, 0.0, 0.28, 0.0, 0.0, 66.7),
-  (0, 'Victoria''s Secret', 18.1, 19.8, 0.0, 0.0,  0.0, 0.0, 66.7);
+```go
+// In the serve command, after resultRepo is set up:
+toolSet := adkpkg.NewToolSet(resultRepo)
+sessionStore := adkpkg.NewMySQLSessionStore(resultRepo)
+strategyAgent, err := adkpkg.NewStrategyAgent(ctx, cfg.ADK, toolSet, sessionStore)
+if err != nil {
+    logger.Fatal("strategy agent init failed", zap.Error(err))
+}
+// Pass strategyAgent to the handler constructor (Task 9 adds the field)
+handler := api.NewHandler(resultRepo, *cfg, logger, strategyAgent)
 ```
 
-Replace `0` with the actual inserted run ID.
+**Verify:** `go run . serve` starts cleanly.
 
-3. Commit `demo/baseline.json`:
+---
+
+## Task 9 — Add new API endpoints
+
+### 9a — `internal/api/handlers.go`
+
+Add two handlers. Do not modify any existing handlers.
+
+```go
+// StrategyChatHandler — POST /api/strategy/chat
+//
+// Request body:
+//   {"brand": "Adore Me", "message": "Why did our score drop?", "session_id": "uuid"}
+//
+// Response: Server-Sent Events stream, one JSON object per line:
+//   data: {"type":"chunk","text":"Based on your data..."}
+//   data: {"type":"tool_call","tool":"get_visibility_trend","args":{"brand":"Adore Me","limit":5}}
+//   data: {"type":"tool_result","tool":"get_visibility_trend","preview":"5 data points returned"}
+//   data: {"type":"chunk","text":"Your score dropped from 42 to 34..."}
+//   data: {"type":"done"}
+//
+// The tool_call and tool_result events are the key demo moment —
+// the frontend renders them as collapsible "Checking data..." badges.
+func (h *Handler) StrategyChatHandler(w http.ResponseWriter, r *http.Request)
+
+// RunTraceHandler — GET /api/runs/{id}/trace
+//
+// Returns all trace rows for a run as a JSON array.
+// Used by the frontend to render the agent timeline on /runs/:id.
+func (h *Handler) RunTraceHandler(w http.ResponseWriter, r *http.Request)
+```
+
+Add `strategyAgent` field to the `Handler` struct:
+```go
+type Handler struct {
+    repo          *db.ResultsRepo
+    cfg           config.Config
+    logger        *zap.Logger
+    strategyAgent *adkpkg.StrategyAgent  // NEW
+}
+
+// Update NewHandler signature:
+func NewHandler(repo *db.ResultsRepo, cfg config.Config, logger *zap.Logger, strategyAgent *adkpkg.StrategyAgent) *Handler
+```
+
+### 9b — `internal/api/server.go`
+
+Register the two new routes. Do not change existing routes.
+
+```go
+r.Post("/api/strategy/chat",      h.StrategyChatHandler)
+r.Get("/api/runs/{id}/trace",     h.RunTraceHandler)
+```
+
+**Verify:**
 ```bash
-geo-tracker run --format json > demo/baseline.json
-git add demo/baseline.json && git commit -m "chore: add demo baseline dataset"
-```
-
-**Verify:** Trend chart now shows 2 data points with upward movement. ExplainabilityPanel can diff run 1 vs run 2.
-
----
-
-## P2 — Polish before the CTO demo
-
----
-
-### `FE-06` · Polish: Runs page — show duration and fix timestamp
-
-**File:** `app/runs/page.tsx` and `components/` — wherever the run row is rendered
-
-Replace the "N/A" time display:
-
-```tsx
-// Replace the N/A logic with:
-const duration = run.duration_seconds
-  ? `${Math.floor(run.duration_seconds / 60)}m ${run.duration_seconds % 60}s`
-  : '—'
-
-const startedAt = run.started_at
-  ? new Date(run.started_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-  : '—'
+go run . serve &
+# Should return 400 (missing body), not 500
+curl -s -o /dev/null -w "%{http_code}" -X POST localhost:8080/api/strategy/chat
+# Should return 200 with JSON array (after a real run has been stored)
+curl localhost:8080/api/runs/1/trace
 ```
 
 ---
 
-### `FE-07` · Polish: Compare page — add Head-to-Head charts section
+## Task 10 — Integration smoke test
 
-**File:** `app/compare/page.tsx`
+Run through all gates in sequence. Fix failures before moving on.
 
-The compare page currently shows only organic metrics. Add the head-to-head section below with a clear visual divider:
+```bash
+# Gate 1: full build
+go build ./...
 
-```tsx
-import { HeadToHeadCharts } from '@/components/compare/HeadToHeadCharts'
+# Gate 2: config validation
+go run . config validate
+# Expected: "config OK" with adk.provider and adk.api_key shown as set
 
-// After the organic section:
-<div className="border-t-2 border-slate-100 pt-8 mt-8">
-  <div className="flex items-center gap-3 mb-6">
-    <h2 className="text-lg font-black text-slate-900">Head-to-Head</h2>
-    <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-full">
-      COMPARISON PROMPTS ONLY
-    </span>
-  </div>
-  <HeadToHeadCharts brands={['Adore Me', "Victoria's Secret"]} />
-</div>
+# Gate 3: dry run (no DB writes, no API calls)
+go run . run --dry-run --verbose
+# Expected: 3 phases logged, PipelineResult printed, no panic
+
+# Gate 4: real run (requires DB + API keys in config.local.yaml)
+go run . run --verbose
+# Expected: results in DB, run_traces rows written, recommendations inserted
+
+# Gate 5: serve + strategy chat
+go run . serve &
+curl -X POST localhost:8080/api/strategy/chat \
+  -H "Content-Type: application/json" \
+  -d '{"brand":"Adore Me","message":"What is my current visibility score?","session_id":"smoke-001"}'
+# Expected: SSE stream with at least one tool_call event and a done event
+
+# Gate 6: run trace
+curl localhost:8080/api/runs/1/trace
+# Expected: JSON array with probe/intelligence/insight trace rows
+
+# Gate 7: results command unchanged
+go run . results summary
+# Expected: organic and comparison sections printed separately
+```
+
+**Hard gate:** All 7 gates must pass before hackathon day.
+
+---
+
+## Task 11 — Update `CLAUDE.md`
+
+Append to the backend repo `CLAUDE.md`. Do not modify existing content.
+
+```markdown
+---
+
+## ADK agent layer
+
+Pipeline orchestration lives in `internal/adk/pipeline.go`.
+Do not add sequencing logic to `cmd/run.go` — all phase ordering is in `Pipeline.Run()`.
+
+### Provider selection
+
+ADK agents use a separate provider from the probe providers.
+Configured via `adk.provider` in `config.yaml` — either `"gemini"` or `"anthropic"`.
+The API key is `adk.api_key` (provider-agnostic field name).
+Model strings in `adk.strategy_model`, `adk.explainer_model`, `adk.recommender_model`
+must match the naming convention of the chosen provider.
+
+To switch from Gemini to Anthropic: change `adk.provider` and `adk.api_key` in
+`config.local.yaml` and update the model strings. Zero code changes required.
+
+### Three pipeline phases
+
+1. **Probe** (parallel goroutine pool) — fires all provider × prompt × brand × sample jobs
+2. **Intelligence** (parallel errgroup) — extraction + stability scoring run concurrently
+3. **Insight** (parallel errgroup, per brand) — explainer + recommender run concurrently
+
+### Agent types
+
+| Agent | File | Model config key | Tools | Memory |
+|---|---|---|---|---|
+| ExplainerAgent | `internal/adk/agents.go` | `adk.explainer_model` | none | none |
+| RecommenderAgent | `internal/adk/agents.go` | `adk.recommender_model` | none | none |
+| StrategyAgent | `internal/adk/agents.go` | `adk.strategy_model` | 6 DB tools | MySQL session store |
+
+### Rules
+
+- Never call ADK agents from `cmd/` directly — always through `Pipeline` or `Handler`
+- Strategy Agent session IDs are brand-scoped: format `"{brand}-{uuid}"`, e.g. `"adore-me-abc123"`
+- Tool functions in `tools.go` are read-only except `mark_recommendation_done`
+- Run traces are written by `Pipeline.traceStart/traceEnd` — never write them manually
+- `adk.api_key` never appears in logs — same rule as all other API keys
+- Model factory `NewADKModel()` is the only place that switches on `adk.provider` —
+  do not add provider-switch logic anywhere else
 ```
 
 ---
 
-### `FE-08` · Polish: Prompts page — expandable rows with stability scores
+## Task 12 — Generate demo baseline
 
-**File:** `app/prompts/page.tsx`
+Once Gate 4 (real run) passes:
 
-The category filter tabs work but the expandable rows (click chevron to expand) need to show a provider hit/miss grid and stability score. The `>` chevron is visible in the screenshot but click does nothing.
-
-Wire the row expansion:
-
-```tsx
-const [expandedId, setExpandedId] = useState<number | null>(null)
-
-// In the row click handler:
-onClick={() => setExpandedId(expandedId === prompt.id ? null : prompt.id)}
-
-// In the expanded row content (shown when expandedId === prompt.id):
-{expandedId === prompt.id && (
-  <PromptExpandedRow promptId={prompt.id} />
-)}
+```bash
+go run . run --format json > demo/baseline.json
+git add demo/baseline.json
+git commit -m "chore: add hackathon demo baseline"
 ```
 
-Create `components/prompts/PromptExpandedRow.tsx` that calls `usePromptResults(promptId)` → `GET /api/prompts/:id/results` and renders a grid of provider × sample results with ✓/✗ indicators and the stability score.
+This is the `--demo` flag fallback if live API calls fail during the presentation.
 
 ---
 
-## Definition of done for hackathon demo
+## Summary: pre-hackathon gate checklist
 
-Before the demo starts, verify this checklist:
-
-- [ ] Dashboard Visibility Score shows a real non-zero number for Adore Me
-- [ ] Dashboard Mention Rate, First Rec Rate, Sentiment Score all show real values
-- [ ] Share of Voice chart shows 3 bars (Claude, ChatGPT, Gemini — Perplexity added during hackathon)
-- [ ] Trend chart shows 2+ data points with upward movement
-- [ ] Explainability panel renders text explaining what changed between run 1 and run 2
-- [ ] LiveRunButton is visible and clicking it opens the SSE modal
-- [ ] Compare page shows both brands side by side with different values
-- [ ] Recommendations page shows 3-5 specific, data-driven actions
-- [ ] Runs page shows a real timestamp and duration (not N/A)
-- [ ] Prompts page shows 50 prompts across all 5 category tabs
+| # | Gate | Command | Pass condition |
+|---|---|---|---|
+| 1 | Build | `go build ./...` | Zero errors |
+| 2 | Config | `go run . config validate` | ADK provider + key shown |
+| 3 | Dry run | `go run . run --dry-run` | 3 phases logged, no panic |
+| 4 | Real run | `go run . run --verbose` | DB has results + traces |
+| 5 | Serve | `go run . serve` | :8080 responds |
+| 6 | Strategy chat | `curl POST /api/strategy/chat` | SSE with tool_call events |
+| 7 | Run trace | `curl GET /api/runs/1/trace` | JSON array of trace rows |
+| 8 | Results | `go run . results summary` | Organic + comparison separate |
+| 9 | Demo baseline | `ls demo/baseline.json` | File exists and is non-empty |
 
 ---
 
-*Project Lighthouse · Hackathon Tasks · Adore Me Tech · June 2026*
+*Project Lighthouse · ADK Refactor · Adore Me Tech Hackathon · June 2026*
