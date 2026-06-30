@@ -18,8 +18,8 @@ export const Sidebar = () => {
   ]
 
   return (
-    <aside className="w-64 border-r border-slate-100 bg-slate-50/50 flex flex-col h-screen sticky top-0">
-      <div className="h-20 flex items-center px-6 border-b border-slate-100 bg-white">
+    <aside className="w-64 border-r border-slate-200 bg-white flex flex-col h-screen sticky top-0">
+      <div className="h-20 flex items-center px-6 border-b border-slate-200 bg-white">
         <div className="flex flex-col">
           <h1 className="text-sm font-black tracking-[0.2em] text-slate-900 flex items-center gap-2 uppercase">
             <ShipWheel size={20} className="text-indigo-600" strokeWidth={2.5} />

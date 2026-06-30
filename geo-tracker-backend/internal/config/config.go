@@ -32,7 +32,6 @@ type ProviderConfig struct {
 	Enabled        bool   `mapstructure:"enabled"`
 	APIKey         string `mapstructure:"api_key"`
 	ProbeModel     string `mapstructure:"probe_model"`
-	ExtractModel   string `mapstructure:"extract_model"`
 	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
 }
 
@@ -92,6 +91,7 @@ type ADKConfig struct {
 	StrategyModel    string `mapstructure:"strategy_model"`
 	ExplainerModel   string `mapstructure:"explainer_model"`
 	RecommenderModel string `mapstructure:"recommender_model"`
+	ExtractorModel   string `mapstructure:"extractor_model"`
 	SessionTTLDays   int    `mapstructure:"session_ttl_days"`
 }
 

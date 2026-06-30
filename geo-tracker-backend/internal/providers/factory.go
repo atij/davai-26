@@ -32,15 +32,15 @@ func NewProviders(cfg config.Config, logger *zap.Logger) []Provider {
 }
 
 // Global factory for extraction calls
-func Extract(ctx context.Context, cfg config.ProviderConfig, providerType string, systemPrompt string, userPrompt string) (string, error) {
+func Extract(ctx context.Context, cfg config.ADKConfig, systemPrompt string, userPrompt string) (string, error) {
 	// Use Gemini for extraction if enabled and healthy, otherwise fallback
 	return extractGemini(ctx, cfg, systemPrompt, userPrompt)
 }
 
-func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt string, userPrompt string) (string, error) {
+func extractClaude(ctx context.Context, cfg config.ADKConfig, systemPrompt string, userPrompt string) (string, error) {
 	url := "https://api.anthropic.com/v1/messages"
 	payload := map[string]interface{}{
-		"model":      cfg.ExtractModel,
+		"model":      cfg.ExtractorModel,
 		"max_tokens": 4096,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
@@ -94,8 +94,8 @@ func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt 
 	return result.Content[0].Text, nil
 }
 
-func extractGemini(ctx context.Context, cfg config.ProviderConfig, systemPrompt string, userPrompt string) (string, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", "gemini-2.0-flash", cfg.APIKey)
+func extractGemini(ctx context.Context, cfg config.ADKConfig, systemPrompt string, userPrompt string) (string, error) {
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cfg.ExtractorModel, cfg.APIKey)
 	payload := map[string]interface{}{
 		"system_instruction": map[string]interface{}{
 			"parts": []map[string]string{

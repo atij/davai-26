@@ -26,7 +26,7 @@ export const Topbar = ({ title, leftContent }: TopbarProps) => {
   const isDashboard = pathname === "/dashboard"
 
   return (
-    <header className="h-20 border-b border-slate-100 bg-white/80 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-30">
+    <header className="h-20 border-b border-slate-200 bg-white/80 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-30">
       <div className="flex items-center">
         {leftContent}
         <h2 className="text-lg font-black text-slate-900 tracking-tight">{title}</h2>

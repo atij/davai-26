@@ -74,12 +74,12 @@ Rules:
 2. competitors_mentioned: list brands mentioned OTHER than the brands being extracted (e.g. Skims, Savage X Fenty).
 3. cited_urls: extract any specific source links or URLs mentioned in the text.`
 
-func ExtractMultiBrand(ctx context.Context, cfg config.ProviderConfig, providerType, rawText string, brands []string) (MultiBrandSignal, error) {
+func ExtractMultiBrand(ctx context.Context, cfg config.ADKConfig, rawText string, brands []string) (MultiBrandSignal, error) {
 	brandsList := strings.Join(brands, ", ")
 	sPrompt := strings.ReplaceAll(multiBrandSystemPrompt, "{{BRANDS}}", brandsList)
 	userPrompt := fmt.Sprintf("Response to analyze:\n\n%s", rawText)
 
-	resText, err := providers.Extract(ctx, cfg, providerType, sPrompt, userPrompt)
+	resText, err := providers.Extract(ctx, cfg, sPrompt, userPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -98,11 +98,11 @@ func ExtractMultiBrand(ctx context.Context, cfg config.ProviderConfig, providerT
 	return signal, nil
 }
 
-func Extract(ctx context.Context, cfg config.ProviderConfig, providerType, rawText, brand string) (GEOSignal, error) {
+func Extract(ctx context.Context, cfg config.ADKConfig, rawText, brand string) (GEOSignal, error) {
 	sPrompt := strings.ReplaceAll(systemPrompt, "{{BRAND}}", brand)
 	userPrompt := fmt.Sprintf("Response to analyze:\n\n%s", rawText)
 
-	resText, err := providers.Extract(ctx, cfg, providerType, sPrompt, userPrompt)
+	resText, err := providers.Extract(ctx, cfg, sPrompt, userPrompt)
 	if err != nil {
 		return GEOSignal{}, err
 	}

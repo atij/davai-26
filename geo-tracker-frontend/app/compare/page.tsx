@@ -40,9 +40,9 @@ export default function ComparePage() {
       <PageShell>
         <section className="mb-16">
           <div className="flex items-center gap-4 mb-10">
-            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Organic Visibility</h2>
-            <div className="h-px flex-1 bg-slate-100" />
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-full">Organic Only</span>
+            <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">Organic Visibility</h2>
+            <div className="h-px flex-1 bg-slate-200" />
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] bg-slate-100 px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">Organic Only</span>
           </div>
           
           {isLoading ? (
@@ -65,9 +65,9 @@ export default function ComparePage() {
         {(loadingCompA || loadingCompB || (compSumA && compSumB)) && (
           <section className="mb-16">
             <div className="flex items-center gap-4 mb-10">
-              <h2 className="text-xl font-bold text-slate-900 tracking-tight">Head-to-Head Analysis</h2>
-              <div className="h-px flex-1 bg-slate-100" />
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-full">Comparison Only</span>
+              <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">Head-to-Head Analysis</h2>
+              <div className="h-px flex-1 bg-slate-200" />
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] bg-slate-100 px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">Comparison Only</span>
             </div>
             
             {loadingCompA || loadingCompB ? (

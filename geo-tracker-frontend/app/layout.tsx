@@ -18,9 +18,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.className} bg-gray-50 flex min-h-screen`}>
+      <body className={`${inter.className} bg-white flex min-h-screen text-slate-900`}>
         <Sidebar />
-        <div className="flex-1 flex flex-col min-h-screen relative">
+        <div className="flex-1 flex flex-col min-h-screen relative bg-white">
           {children}
         </div>
       </body>

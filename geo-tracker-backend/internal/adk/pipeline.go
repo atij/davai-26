@@ -446,10 +446,7 @@ func (p *Pipeline) executeOrganicJob(ctx context.Context, j organicJob, run db.R
 		return
 	}
 
-	extractCfg := p.cfg.Providers.Claude
-	extractCfg.ExtractModel = "claude-haiku-4-5-20251001"
-
-	multiSignal, err := agent.ExtractMultiBrand(ctx, extractCfg, "claude", probeRes.RawText, brands)
+	multiSignal, err := agent.ExtractMultiBrand(ctx, p.cfg.ADK, probeRes.RawText, brands)
 	
 	cost := p.calculateCost(j.Provider.Name(), probeRes.ModelVersion, probeRes.TokensInput, probeRes.TokensOutput)
 
@@ -545,10 +542,7 @@ func (p *Pipeline) executeProbeJob(ctx context.Context, job probeJob) db.Result 
 	result.LatencyMS = latency
 	result.CostUSD = p.calculateCost(job.Provider.Name(), probeRes.ModelVersion, probeRes.TokensInput, probeRes.TokensOutput)
 
-	extractCfg := p.cfg.Providers.Claude
-	extractCfg.ExtractModel = "claude-haiku-4-5-20251001"
-
-	signal, err := agent.Extract(ctx, extractCfg, "claude", probeRes.RawText, job.Brand)
+	signal, err := agent.Extract(ctx, p.cfg.ADK, probeRes.RawText, job.Brand)
 	if err == nil {
 		result.BrandMentioned = signal.BrandMentioned
 		result.Sentiment = signal.Sentiment

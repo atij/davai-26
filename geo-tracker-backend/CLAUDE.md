@@ -1,69 +1,95 @@
-# CLAUDE.md — GEO Tracker
+# CLAUDE.md — GEO Tracker (geo-tracker-backend)
 
 This file tells you everything you need to know to work in this codebase.
 Read it fully before writing any code.
+
+> **This file was rewritten on 2026-06-30 to match the actual repository
+> state after the ADK migration and the provider web-search fix.** The
+> original hackathon-era CLAUDE.md described a hand-rolled goroutine runner
+> that no longer exists. If you find code that contradicts this file, trust
+> the code and flag the doc as stale again — but as of this rewrite, this
+> file has been verified line-by-line against the live repo.
 
 ---
 
 ## What this app does
 
-GEO Tracker is a Go CLI app that probes 4 AI providers (Claude, ChatGPT, Perplexity, Gemini)
-with curated prompts, extracts brand visibility signals, stores results in MySQL, and serves
-a JSON API for a React dashboard. It runs as a Kubernetes CronJob — no internal scheduler.
+GEO Tracker is a Go CLI app that probes AI providers (Claude, ChatGPT,
+Perplexity, Gemini — currently only ChatGPT and Gemini are enabled, see
+"Current provider state" below) with curated prompts, extracts brand
+visibility signals via an LLM agent layer, stores results in MySQL, and
+serves a JSON API for a React dashboard. It runs as a Kubernetes CronJob —
+no internal scheduler.
 
 ---
 
 ## Commands
 
 ```
-geo-tracker run       # fire all active prompts at all enabled providers
-geo-tracker results   # query and display results (subcommands: summary, trend, prompt)
-geo-tracker prompts   # manage prompt library (subcommands: list, add, retire, import)
-geo-tracker serve     # expose results as JSON API for the dashboard
-geo-tracker config    # validate and show resolved config (subcommands: show, validate)
+geo-tracker run all            # full pipeline: probe → intelligence → insight
+geo-tracker run ingest         # Phase 1 only — probe + store raw results
+geo-tracker run intelligence   # Phase 2 only — extraction + stability scoring
+geo-tracker run insight        # Phase 3 only — explainer + recommender
+geo-tracker run list           # list recent pipeline runs
+geo-tracker results            # query and display results (subcommands: summary, trend, prompt)
+geo-tracker prompts            # manage prompt library (subcommands: list, add, retire, import)
+geo-tracker serve              # expose results as JSON API for the dashboard
+geo-tracker config             # validate and show resolved config (subcommands: show, validate)
 ```
 
-There is no `schedule` command. Scheduling is handled externally by Kubernetes CronJob.
+There is no `schedule` command. Scheduling is handled externally by
+Kubernetes CronJob (`geo-tracker run all --exit-code`).
 
 ---
 
-## Repository structure
+## Repository structure (current)
 
 ```
-geo-tracker/
+geo-tracker-backend/
 ├── cmd/
-│   ├── root.go           # root Cobra command, Viper bootstrap, logger init
-│   ├── run.go            # run command
-│   ├── results.go        # results command + subcommands
-│   ├── prompts.go        # prompts command + subcommands
-│   ├── serve.go          # serve command
-│   └── config.go         # config command + subcommands
+│   ├── root.go
+│   ├── run.go             # run all/ingest/intelligence/insight/list — wires up adk.Pipeline
+│   ├── results.go
+│   ├── prompts.go
+│   ├── serve.go            # constructs + injects StrategyAgent (not yet exposed via API — see below)
+│   └── config.go
 ├── internal/
 │   ├── config/
-│   │   └── config.go     # Config struct, Load(), Validate()
+│   │   └── config.go       # Config struct incl. ADKConfig, CostRatesConfig
 │   ├── db/
-│   │   ├── db.go         # sqlx connection, Migrate()
-│   │   ├── schema.sql    # table definitions (source of truth)
-│   │   ├── prompts.go    # prompt repository
-│   │   └── results.go    # results repository
+│   │   ├── db.go
+│   │   ├── schema.sql       # source of truth — includes agent_sessions, run_traces
+│   │   ├── prompts.go
+│   │   └── results.go       # results repo + ADK tool query functions
 │   ├── providers/
-│   │   ├── provider.go   # Provider interface + ProbeResponse struct
-│   │   ├── anthropic.go  # Claude
-│   │   ├── openai.go     # ChatGPT
-│   │   ├── perplexity.go # Perplexity (+ cited URL extraction)
-│   │   └── gemini.go     # Gemini via OpenAI-compat endpoint
+│   │   ├── provider.go      # Provider interface + ProbeResponse + ResolveRedirects()
+│   │   ├── anthropic.go     # Claude — native web_search_20250305 tool
+│   │   ├── openai.go        # ChatGPT (Responses API, native web_search tool)
+│   │   │                    #   + Perplexity + Gemini implementations live in this
+│   │   │                    #   same file via openAIProvider{name: ...} branching —
+│   │   │                    #   NOT one-file-per-provider despite the name. See note below.
+│   │   └── factory.go       # NewProviders(), Extract() helper used by agent layer
 │   ├── agent/
-│   │   └── extractor.go  # Haiku extraction agent → GEOSignal
-│   ├── runner/
-│   │   └── runner.go     # worker pool, async fan-out, result collector
+│   │   └── extractor.go     # GEOSignal, MultiBrandSignal, Extract(), ExtractMultiBrand()
+│   │                        # NOTE: extraction LLM call now goes through internal/adk
+│   │                        # model factory, not a hardcoded Claude Haiku call — see
+│   │                        # "Extraction" section below.
+│   ├── adk/
+│   │   ├── pipeline.go      # Pipeline.Run() — the 3-phase orchestrator (THE runner)
+│   │   ├── agents.go        # ExplainerAgent, RecommenderAgent, StrategyAgent
+│   │   ├── model.go         # NewADKModel() — provider-agnostic model factory
+│   │   ├── memory.go        # MySQLSessionStore (Strategy Agent session persistence)
+│   │   └── tools.go         # ToolSet — DB-query tools for Strategy Agent (not yet wired to an API route)
+│   ├── scoring/
+│   │   └── visibility.go    # pure math — stability score, visibility score formula
 │   └── api/
-│       ├── server.go     # chi router, middleware
-│       ├── handlers.go   # HTTP handlers
-│       └── dto.go        # request/response types
+│       ├── server.go
+│       ├── handlers.go
+│       └── dto.go
 ├── prompts/
-│   └── seed.yaml         # 50 curated seed prompts
-├── config.yaml           # default config, committed, no secrets
-├── config.local.yaml     # gitignored, local overrides and API keys
+│   └── seed.yaml
+├── config.yaml               # committed, no secrets
+├── config.local.yaml          # gitignored — local overrides and API keys
 ├── .gitignore
 ├── go.mod
 ├── go.sum
@@ -71,125 +97,56 @@ geo-tracker/
 └── main.go
 ```
 
----
+**Note on `internal/providers/openai.go`:** despite the filename, this file
+contains the OpenAI, Perplexity, AND Gemini probe implementations, branching
+internally on `p.name`. This deviates from the original "one file per
+provider, no shared logic" rule. Whether to split this back into separate
+files is an open cleanup item — not done as part of this rewrite, flagged
+here so nobody assumes `gemini.go`/`perplexity.go` exist when they don't.
 
-## Tech stack
-
-| Concern | Library |
-|---|---|
-| CLI | `github.com/spf13/cobra` |
-| Config | `github.com/spf13/viper` |
-| Database | `github.com/jmoiron/sqlx` + `github.com/go-sql-driver/mysql` |
-| HTTP router | `github.com/go-chi/chi/v5` |
-| Logging | `go.uber.org/zap` |
-| Testing | standard `testing` package + `github.com/stretchr/testify` |
-
-Do not add dependencies without a clear reason. Prefer stdlib over new deps for simple tasks.
+`internal/runner/runner.go` has been **deleted**. It was the pre-ADK,
+single-brand-per-job implementation, superseded by `internal/adk/pipeline.go`.
+If you see references to it anywhere (old branches, stale docs), that code
+no longer exists in `main`.
 
 ---
 
-## Configuration
+## Current provider state (as of 2026-06-30, testing phase)
 
-Config is loaded in this priority order (highest wins):
+| Provider | Enabled | Reason |
+|---|---|---|
+| ChatGPT | yes | |
+| Gemini | yes | |
+| Claude | no | waiting on a valid API key |
+| Perplexity | no | blocked by Zscaler network policy |
 
-1. Environment variables prefixed `GEOTRACKER_` (e.g. `GEOTRACKER_DATABASE_PASSWORD`)
-2. `config.local.yaml` (gitignored — local dev and secrets)
-3. `config.yaml` (committed — defaults and structure)
-
-In Kubernetes, secrets are injected as env vars from a K8s Secret object.
-Never read API keys or DB passwords from anywhere other than the Viper-resolved config.
-
-### config.yaml structure
-
-```yaml
-app:
-  name: geo-tracker
-  log_level: info           # debug | info | warn | error
-
-database:
-  host: localhost
-  port: 3306
-  name: geo_tracker
-  user: root
-  password: ""
-  max_open_conns: 10
-  max_idle_conns: 5
-
-brands:
-  - name: "Adore Me"
-  - name: "Victoria's Secret"
-
-providers:
-  claude:
-    enabled: true
-    api_key: ""
-    probe_model: "claude-sonnet-4-6"
-    extract_model: "claude-haiku-4-5-20251001"
-    timeout_seconds: 30
-  chatgpt:
-    enabled: true
-    api_key: ""
-    probe_model: "gpt-4o"
-    extract_model: "gpt-4o-mini"
-    timeout_seconds: 30
-  perplexity:
-    enabled: true
-    api_key: ""
-    probe_model: "llama-3.1-sonar-large-128k-online"
-    timeout_seconds: 30
-  gemini:
-    enabled: true
-    api_key: ""
-    probe_model: "gemini-2.0-flash"
-    timeout_seconds: 30
-
-runner:
-  workers: 8
-  retry_attempts: 2
-  retry_delay_seconds: 5
-  rate_limit_per_minute: 60
-
-serve:
-  host: "0.0.0.0"
-  port: 8080
-  cors_origins:
-    - "http://localhost:3000"
-```
+This is a temporary testing configuration, not a permanent architecture
+decision. Code must continue to support all 4 providers being enabled —
+do not hardcode assumptions that only 2 providers are active.
 
 ---
 
-## Database
+## Probe models (config.yaml `providers.*.probe_model`)
 
-### Rules
-- All schema changes go in `internal/db/schema.sql` first — this is the source of truth
-- `Migrate()` in `db.go` applies schema idempotently using `CREATE TABLE IF NOT EXISTS`
-- Never use raw `database/sql` — always use `sqlx`
-- All queries use named parameters: `db.NamedExec`, `db.NamedQuery`, `sqlx.Named`
-- Never use `SELECT *` — always name columns explicitly
-- Soft-delete only — prompts are retired (`active=false`, `retired_at=now`), never hard-deleted
-- Every `results` row must have a valid `run_id` — always create the run record first
-
-### Schema overview
-
-```sql
--- prompts: the library of questions fired at providers
--- runs: one record per execution of geo-tracker run
--- results: one record per prompt × provider × brand × run
-```
-
-Full definitions live in `internal/db/schema.sql`.
+| Provider | Current value | Notes |
+|---|---|---|
+| `claude` | `claude-sonnet-4-6` | matches Claude.ai default |
+| `chatgpt` | `gpt-4o` | stale — ChatGPT's chat-UI default moved to GPT-5.5 Instant; not yet updated here, not urgent (gpt-4o still functions) |
+| `perplexity` | `llama-3.1-sonar-large-128k-online` | not yet re-verified against current perplexity.ai default |
+| `gemini` | `gemini-flash-latest` | current — auto-tracking alias, fixed after `gemini-2.0-flash` was shut down by Google on 2026-06-01 |
 
 ---
 
 ## Provider interface
 
-Every provider must implement this interface. No concrete provider type is used
-outside of `internal/providers/`.
-
 ```go
 type ProbeResponse struct {
-    RawText   string
-    CitedURLs []string  // Perplexity populates this; others return empty slice
+    RawText      string
+    CitedURLs    []string
+    TokensInput  int
+    TokensOutput int
+    LatencyMS    int
+    ModelVersion string
 }
 
 type Provider interface {
@@ -199,295 +156,236 @@ type Provider interface {
 ```
 
 ### Rules
-- Each provider gets its own file — one file per provider, no shared logic except the interface
-- Always use `context.WithTimeout` with the provider's configured `timeout_seconds`
+- `context.WithTimeout` using the provider's configured `timeout_seconds`
 - Retry on transient errors only (5xx, timeout) — do not retry 4xx
 - Never log raw API responses at info level — only at debug level
-- Perplexity: extract the `citations` array from the API response into `CitedURLs`
-- The extraction agent (Haiku) is called by `agent/extractor.go`, not by providers
+- The extraction agent is called by `agent/extractor.go` via the ADK model
+  factory, not by providers directly
 
 ### Two-call design (important)
 The probe call has **no system prompt** — this measures organic AI behavior.
-The extraction call is a separate Claude Haiku call with a strict system prompt.
+The extraction call is a separate LLM call with a strict system prompt.
 Never combine them into one call.
 
-**Note on Search/Grounding:** "No system prompt" on the probe call refers to *not directing the model's search behavior* — it does NOT mean tools/search must be disabled. Native server-side web search/grounding tools are enabled for all providers (Anthropic, OpenAI Responses API, Gemini Native API, Perplexity) to mirror chat UI behavior and ensure grounded responses with citations.
+**Note on search/grounding:** "no system prompt" refers to *not directing
+the model's search behavior* — it does NOT mean tools/search must be
+disabled. Native server-side web search/grounding tools are enabled for all
+4 providers to mirror real chat-UI behavior and ensure grounded responses
+with citations:
+
+| Provider | Search mechanism |
+|---|---|
+| Claude | native `web_search_20250305` tool, server-executed, single turn |
+| ChatGPT | Responses API (`/v1/responses`) native `web_search` tool — not `/v1/chat/completions`, which does not support native search |
+| Gemini | native `generateContent` endpoint with `google_search` grounding tool; grounding redirect URLs are resolved via `providers.ResolveRedirects()` |
+| Perplexity | searches by default (Sonar models) — no tool config needed |
+
+Do not reintroduce custom client-side function-tool definitions for search
+(e.g. a hand-declared `google_search` function tool) — these require a
+second round-trip to execute that the pipeline does not perform, and will
+silently produce ungrounded, uncited responses.
 
 ---
 
-## Extraction agent
+## Extraction (multi-brand)
 
-`internal/agent/extractor.go` takes a raw provider response and returns a structured signal.
+`internal/agent/extractor.go` takes a raw provider response and returns a
+multi-brand structured signal in a single LLM call, not one call per
+brand:
 
 ```go
 type GEOSignal struct {
-    BrandMentioned       bool     `json:"brand_mentioned"`
-    Sentiment            string   `json:"sentiment"`         // positive|neutral|negative|not_mentioned
-    MentionCount         int      `json:"mention_count"`
-    RecommendationRank   *int     `json:"recommendation_rank"` // nil if not mentioned
-    CompetitorsMentioned []string `json:"competitors_mentioned"`
-    CitedURLs            []string `json:"cited_urls"`
+    BrandMentioned       bool
+    Sentiment            string   // positive|neutral|negative|not_mentioned
+    MentionCount         int
+    RecommendationRank   *int
+    CompetitorsMentioned []string
+    CitedURLs            []string
+    Summary              string
+    ReasoningNote        string
 }
+
+type MultiBrandSignal map[string]GEOSignal // key: brand name
+
+func ExtractMultiBrand(ctx, cfg, providerType, rawText string, brands []string) (MultiBrandSignal, error)
+func Extract(ctx, cfg, providerType, rawText, brand string) (GEOSignal, error) // still used for comparison-category prompts
 ```
 
-### Rules
-- Always use `claude-haiku-4-5-20251001` for extraction — cheap and fast
-- System prompt must instruct the model to return only valid JSON, no markdown fences
-- Parse response with `json.Unmarshal` — if it fails, return an error, do not guess
-- Merge `CitedURLs` from `ProbeResponse` into the signal (Perplexity URLs take priority)
-- Log extraction errors but do not fail the whole run — store `extraction_error` in DB
+### Why multi-brand
+Organic prompts (purchase/discovery/fit/gifting) never name a brand by
+design — the prompt text is identical for every brand. Probing the same
+prompt once per brand wasted API calls and produced non-comparable samples
+(brand A's mention rate measured against a different raw response than
+brand B's). The pipeline now probes once per (prompt, provider, sample)
+for organic prompts, and extracts signals for all configured brands
+from that single response.
 
----
+Comparison-category prompts are unaffected — they name a brand explicitly
+in the prompt text, so they still require one probe per (prompt, provider,
+brand, sample), and use the single-brand `Extract()` function.
 
-## Runner
+### Extraction model — now lives under `adk`, not per-provider config
+The `extract_model` field that used to live on each `providers.*` config
+block is gone. Extraction is an ADK agent operation now:
 
-`internal/runner/runner.go` fans out all jobs (prompt × provider × brand) across a
-worker pool and collects results.
+- Config key: `adk.extractor_model`
+- Default: `gemini-2.5-flash` (current `adk.provider: gemini` default)
+- The extraction call goes through the same `NewADKModel()` factory as
+  Explainer/Recommender/Strategy — there is no hardcoded model string
+  for extraction anywhere in `internal/adk/pipeline.go`. If you find one,
+  it's a regression — file an issue.
+- `gemini-2.0-flash` must never be referenced anywhere as a valid model —
+  Google shut it down 2026-06-01.
 
-### Rules
-- Worker count comes from `runner.workers` config — never hardcode
-- Use a buffered job channel and a fixed pool of goroutines — no unbounded goroutine spawning
-- Respect `rate_limit_per_minute` using a token bucket or `time.Ticker`
-- Each job: `provider.Probe()` → `agent.Extract()` → return result
-- Collect results via a results channel — use a `sync.WaitGroup` to know when all jobs are done
-- Progress: log each completed job at info level with provider, brand, prompt_id, brand_mentioned
-
----
-
-## Runner (run command)
-
-### Behavior
-1. Load active prompts from DB
-2. Create a `runs` record with `status = running`
-3. Call `runner.RunAll()`
-4. Write all results to DB
-5. Update `runs` record to `status = done` (or `failed` on error)
-6. Print summary table to stdout
-
-### Flags
-```
---brands strings      override brands from config
---providers strings   run only specific providers
---dry-run             probe but do not write to DB
---verbose             print raw responses to stdout
---exit-code           exit non-zero on any probe or extraction error (for K8s job detection)
-```
-
-### Kubernetes notes
-- The app must exit 0 on success and non-zero on failure
-- `--exit-code` flag ensures K8s CronJob can detect and retry failed runs
-- All config comes from env vars injected by K8s Secret — no config files in the image
-
----
-
-## API server (serve command)
-
-Router: `chi`. All routes under `/api/`.
-
-### Endpoints
-
-```
-GET /api/health                          → {"status":"ok","db":"ok"}
-GET /api/runs                            → paginated list of runs
-GET /api/runs/:id/results                → all results for a run
-GET /api/brands                          → list of tracked brands
-GET /api/brands/:brand/summary           → latest mention rate + sentiment
-GET /api/brands/:brand/trend             → mention rate over time (?runs=N)
-GET /api/compare?brands=A,B             → side-by-side brand comparison
-GET /api/competitors?brand=X            → top competitors for a brand
-GET /api/prompts                         → active prompt list
-GET /api/prompts/:id/results             → results per prompt across providers
-```
-
-### Rules
-- All handlers return `application/json`
-- Error envelope: `{"error": "human message", "code": "SCREAMING_SNAKE_CASE"}`
-- 404 for unknown routes, 405 for wrong method — chi handles these automatically
-- CORS origins come from `serve.cors_origins` config — do not hardcode
-- No auth in v1 — this is an internal tool on a private network
-- Pagination: `?page=1&per_page=20` — default 20, max 100
-
----
-
-## Logging
-
-- Use `zap.Logger` everywhere — no `fmt.Println` in business logic, no `log.Print`
-- Inject logger via struct fields and function parameters — no global logger variable
-- Standard fields on every log line: `run_id`, `provider`, `brand`, `prompt_id` (where applicable)
-- API keys and DB passwords must never appear in log output at any level
-- Slow provider calls (> 10s) log at warn level with duration field
-- `--log-level` flag on root command overrides `app.log_level` from config
-
----
-
-## Error handling
-
-- Return errors up the call stack — do not swallow them silently
-- Wrap errors with context: `fmt.Errorf("probe claude: %w", err)`
-- Extraction errors are non-fatal — log + store `extraction_error` in DB, continue run
-- Provider probe errors are non-fatal per job — log + mark result as errored, continue run
-- A run fails (exit non-zero) only if no results were successfully stored at all
-- DB connection failure on startup is fatal — log and exit 1
-
----
-
-## Testing
-
-- Table-driven tests for: `internal/config`, `internal/agent`, `internal/db` repositories
-- Provider implementations: test with a mock HTTP server (`net/http/httptest`)
-- Runner: test with mock providers that return fixed responses
-- API handlers: test with `net/http/httptest` and real chi router
-- Do not test `cmd/` directly — test the internal packages they call
-- Test files live next to the code they test: `extractor_test.go` beside `extractor.go`
-- No integration tests that require a real DB or real API keys in CI
-
----
-
-## Code style
-
-- `gofmt` always — no exceptions
-- `golint` and `go vet` must pass before commit
-- No exported types in `internal/` packages except those that cross package boundaries
-- Interfaces defined where they are used, not where they are implemented
-- No init() functions
-- No global variables — inject everything
-- Short variable names for short scopes, descriptive names for package-level identifiers
-- Comment all exported types and functions — one sentence minimum
-
----
-
-## Prompt library
-
-Seed prompts live in `prompts/seed.yaml`. Import with:
-
-```bash
-geo-tracker prompts import prompts/seed.yaml
-```
-
-### YAML format
-
-```yaml
-prompts:
-  - text: "Best lingerie for plus size women?"
-    category: purchase
-    notes: "Core discovery query"
-  - text: "Compare Adore Me vs Victoria's Secret"
-    category: comparison
-    notes: "Direct brand comparison"
-```
-
-### Categories
-- `purchase` — buy intent queries (15 prompts)
-- `discovery` — brand discovery queries (10 prompts)
-- `fit` — fit and sizing advice (10 prompts)
-- `comparison` — brand comparison queries (10 prompts)
-- `gifting` — gift recommendation queries (5 prompts)
-
-### Rules for prompts
-- Write prompts exactly as a real customer would type them to an AI chatbot
-- No brand names in the prompt text unless the category is `comparison`
-- Cover a range of customer intents, body types, price sensitivities
-- Retiring a prompt does not delete historical results — `run_id` links are preserved
-
----
-
-## Running locally
-
-```bash
-# 1. Copy and fill in secrets
-cp config.yaml config.local.yaml
-# edit config.local.yaml with API keys and DB credentials
-
-# 2. Start MySQL (Docker)
-docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=geo_tracker mysql:8
-
-# 3. Validate config and apply schema
-go run . config validate
-
-# 4. Seed prompts
-go run . prompts import prompts/seed.yaml
-
-# 5. Run once
-go run . run --verbose
-
-# 6. Check results
-go run . results summary
-
-# 7. Start API server
-go run . serve
-```
-
----
-
-## Building and deploying
-
-```bash
-# Build binary
-go build -o geo-tracker .
-
-# Build Docker image
-docker build -t adoreme/geo-tracker:latest .
-
-# Kubernetes CronJob fires:
-geo-tracker run --exit-code
-```
-
-The Dockerfile should produce a minimal image — use a multi-stage build with
-`golang:1.23-alpine` to build and `alpine:3.19` as the final stage.
-Copy only the binary into the final image. No config files — all config via env vars in K8s.
-
----
-
-## What not to build
-
-- No internal scheduler or cron — Kubernetes handles this
-- No authentication — internal tool on private network
-- No frontend — the React dashboard is a separate repo that calls `geo-tracker serve`
-- No migrations framework — `Migrate()` with `CREATE TABLE IF NOT EXISTS` is enough for v1
-- No message queue — the runner worker pool is sufficient for 50 prompts × 4 providers
+### Known issue — substring heuristic override (pending decision)
+`internal/adk/pipeline.go`'s organic extraction path currently includes a
+post-extraction heuristic: if the LLM extractor says `brand_mentioned:
+false` but the brand name appears as a literal case-insensitive substring
+anywhere in the raw response text, the code force-flips
+`brand_mentioned: true`. This is unreviewed and undocumented in its
+current form — it can produce false positives (e.g. "I have no
+information about Adore Me" would count as a mention). A decision is
+pending on whether to keep it (and make it visible via a
+`mention_source: llm | heuristic_override` field) or remove it in favor of
+improving the extraction prompt directly. Do not assume this is settled
+behavior — check with the team before relying on it or removing it.
 
 ---
 
 ## ADK agent layer
 
 Pipeline orchestration lives in `internal/adk/pipeline.go`.
-Do not add sequencing logic to `cmd/run.go` — all phase ordering is in `Pipeline.Run()`.
+Do not add sequencing logic to `cmd/run.go` — all phase ordering is in
+`Pipeline.Run()`.
 
 ### Provider selection
 
-ADK agents use a separate provider from the probe providers.
-Configured via `adk.provider` in `config.yaml` — either `"gemini"` or `"anthropic"`.
-The API key is `adk.api_key` (provider-agnostic field name).
-Model strings in `adk.strategy_model`, `adk.explainer_model`, `adk.recommender_model`
-must match the naming convention of the chosen provider.
+```yaml
+adk:
+  provider: "gemini"            # "gemini" | "anthropic"
+  api_key: ""                   # GEOTRACKER_ADK_API_KEY env var — single key for all ADK agents
+  strategy_model: "gemini-2.5-flash"
+  explainer_model: "gemini-2.5-flash"
+  recommender_model: "gemini-2.5-flash"
+  extractor_model: "gemini-2.5-flash"   # see "Extraction" section above
+  session_ttl_days: 30
+```
 
-To switch from Gemini to Anthropic: change `adk.provider` and `adk.api_key` in
-`config.local.yaml` and update the model strings. Zero code changes required.
+All four ADK agent models currently share one `adk.provider`/`adk.api_key`
+— there is no per-agent provider override yet. When the Claude API key
+becomes available, mixed-provider experiments (e.g. Gemini for extraction,
+Claude for explainer) are planned future work, not current behavior.
+
+`NewADKModel()` in `model.go` is the single switch point for provider
+selection — do not add provider-switch logic anywhere else.
 
 ### Three pipeline phases
 
-1. **Probe** (parallel goroutine pool) — fires all provider × prompt × brand × sample jobs
-2. **Intelligence** (parallel errgroup) — extraction + stability scoring run concurrently
-3. **Insight** (parallel errgroup, per brand) — explainer + recommender run concurrently
+```
+Phase 1 — PROBE (parallel goroutine pool)
+  Organic prompts:    (prompt, provider, sample) -> provider.Probe() -> ExtractMultiBrand() -> N brand result rows
+  Comparison prompts: (prompt, provider, brand, sample) -> provider.Probe() -> Extract() -> 1 result row
+
+Phase 2 — INTELLIGENCE (parallel via errgroup)
+  A: stability scoring (per prompt x provider x brand, across samples)
+  B: visibility score calculation
+
+Phase 3 — INSIGHT (parallel via errgroup, per brand)
+  A: ExplainerAgent.Explain()
+  B: RecommenderAgent.Recommend()
+```
+
+Each phase writes a row to `run_traces` on start/finish — surfaced (or
+intended to be surfaced) in the dashboard as a live agent execution
+timeline (`/runs/:id`).
 
 ### Agent types
 
-| Agent | File | Model config key | Tools | Memory |
-|---|---|---|---|---|
-| ExplainerAgent | `internal/adk/agents.go` | `adk.explainer_model` | none | none |
-| RecommenderAgent | `internal/adk/agents.go` | `adk.recommender_model` | none | none |
-| StrategyAgent | `internal/adk/agents.go` | `adk.strategy_model` | 6 DB tools | MySQL session store |
+| Agent | File | Model config key | Status |
+|---|---|---|---|
+| ExplainerAgent | `internal/adk/agents.go` | `adk.explainer_model` | shipped, part of Phase 3 |
+| RecommenderAgent | `internal/adk/agents.go` | `adk.recommender_model` | shipped, part of Phase 3 |
+| StrategyAgent | `internal/adk/agents.go` | `adk.strategy_model` | built but not wired to a live API route yet — `cmd/serve.go` constructs it, but `POST /api/strategy/chat` (SSE) is not yet implemented in `internal/api/handlers.go`. Treat as in-progress, not shipped. |
+
+### Strategy Agent (in progress, not yet exposed)
+Conversational agent with 6 read-mostly DB tools (`internal/adk/tools.go`)
+and persistent session memory via `MySQLSessionStore` (`agent_sessions`
+table). Tools: `get_visibility_trend`, `get_citation_gaps`,
+`get_stability_scores`, `get_competitor_share`, `search_recommendations`
+(read-only), `mark_recommendation_done` (the one write). This is the
+planned demo centerpiece but is not yet reachable from the frontend or API
+— do not document or demo it as a working feature until
+`POST /api/strategy/chat` exists.
 
 ### Rules
-
-- Never call ADK agents from `cmd/` directly — always through `Pipeline` or `Handler`
-- Strategy Agent session IDs are brand-scoped: format `"{brand}-{uuid}"`, e.g. `"adore-me-abc123"`
+- Never call ADK agents from `cmd/` directly — always through `Pipeline` or
+  a constructed agent passed in
+- Strategy Agent session IDs are brand-scoped: format `"{brand}-{uuid}"`
 - Tool functions in `tools.go` are read-only except `mark_recommendation_done`
-- Run traces are written by `Pipeline.traceStart/traceEnd` — never write them manually
+- Run traces are written by `Pipeline.traceStart/traceEnd` — never write
+  them manually
 - `adk.api_key` never appears in logs — same rule as all other API keys
-- Model factory `NewADKModel()` is the only place that switches on `adk.provider` —
-  do not add provider-switch logic anywhere else
+  and must never appear in chat, config samples shared outside the
+  secrets manager, or committed config — if it ever does, rotate it
+  immediately
 
 ---
 
-*GEO Tracker · Adore Me Tech · June 2026*
+## Known frontend/backend serialization mismatch (open issue)
+
+`geo-tracker-frontend/components/runs/RunTraceTimeline.tsx` defensively
+reads both snake_case and PascalCase field names for trace data
+(`trace.duration_ms ?? trace.DurationMS`, etc.), even though the backend
+`RunTrace` struct has correct `json:"duration_ms"`-style tags. This means
+some code path producing trace data for the frontend (likely an SSE stream
+or a different in-memory representation than the tagged `RunTrace` struct)
+is NOT going through those JSON tags. The frontend workaround masks the
+symptom but the root cause — wherever trace data is serialized outside the
+`RunTrace` struct's tags — has not been found/fixed yet. Any new component
+consuming `run_traces` data should be aware it may need the same dual-key
+workaround until the root cause is fixed.
+
+---
+
+## Known "no data" ambiguity (open issue)
+
+`ResultRepo.GetBrandSummary()` returns a zeroed/skeleton `BrandSummary`
+(all rates 0.0, no error) when a brand has no results yet for the latest
+run, rather than a distinct "no data" signal (404, null, or an explicit
+flag). The frontend currently cannot distinguish "this brand genuinely
+scored 0% mention rate" from "we have no data for this brand in this run
+yet" — both render identically. Not yet fixed; flagged for whoever picks
+up dashboard "no data" complaints next.
+
+---
+
+## Cost tracking — model-keyed rate map (pending implementation)
+
+`cost_rates` in config currently keys rates by hand-picked labels
+(`claude_sonnet`, `gpt4o`, `gemini_flash`, etc.) and `calculateCost()` does
+fuzzy provider-name/substring matching to pick a rate. This breaks silently
+whenever a `probe_model` changes (e.g. swapping `gemini-2.0-flash` ->
+`gemini-flash-latest` kept applying the old `gemini_flash` rate with no
+signal that pricing might now be wrong).
+
+Decided direction (not yet implemented): `cost_rates` should be keyed
+by the literal model version string (`result.ModelVersion`, as recorded
+from the actual API response) instead of a hand-picked label, looked up via
+a flat map in `calculateCost()`. If a model string has no entry, log a
+warning (not an error — the run continues) and the row's cost should
+not silently default to another model's rate. Prices are maintained
+manually based on provider pricing pages — no auto-fetching.
+
+Also pending: the same cost-double-counting bug affecting organic rows
+(each probe's full cost currently gets attributed to every brand's result
+row derived from it, inflating `TotalCostUSD` by roughly brand-count times
+the real value). Needs a fix where probe cost is attributed once per probe,
+not once per derived result row.
+
+---
+
+## Known config drift to watch for
+- `config.ProviderConfig` struct still declares `ExtractModel` — this field
+  is dead, no longer read by `pipeline.go`, and absent from
+  `config.yaml`. Remove it from the struct when convenient; until then,
+  do not add new code that reads `cfg.Providers.*.ExtractModel`.

@@ -1,0 +1,76 @@
+app:
+  name: geo-tracker
+  log_level: info
+
+database:
+  host: localhost
+  port: 32000
+  name: geo_tracker
+  user: homestead
+  password: secret
+  max_open_conns: 10
+  max_idle_conns: 5
+
+brands:
+  - name: "Adore Me"
+  - name: "Victoria's Secret"
+
+providers:
+  claude:
+    enabled: false
+    api_key: ""
+    probe_model: "claude-sonnet-4-6"
+    timeout_seconds: 30
+  chatgpt:
+    enabled: true
+    api_key: ""
+    probe_model: "gpt-4o"
+    timeout_seconds: 90
+  perplexity:
+    enabled: false
+    api_key: ""
+    probe_model: "llama-3.1-sonar-large-128k-online"
+    timeout_seconds: 30
+  gemini:
+    enabled: true
+    api_key: ""
+    probe_model: "gemini-flash-latest"
+    timeout_seconds: 90
+
+runner:
+  workers: 8
+  samples_per_prompt: 3          # stability analysis — run each prompt N times
+  retry_attempts: 2
+  retry_delay_seconds: 5
+  rate_limit_per_minute: 60
+
+cost_rates:
+  claude_sonnet:  { input: 3.00, output: 15.00 }   # per million tokens
+  claude_haiku:   { input: 1.00, output:  5.00 }
+  gpt4o:          { input: 2.50, output: 10.00 }
+  gpt4o_mini:     { input: 0.15, output:  0.60 }
+  perplexity:     { input: 1.00, output:  1.00 }
+  gemini_flash:   { input: 1.50, output:  9.00 }
+
+serve:
+  host: localhost
+  port: 8080
+  cors_origins:
+    - "http://localhost:3000"
+
+# ADK agent layer — controls LLM backend for explainer, recommender, strategy agents.
+# This is separate from the providers section (probe calls).
+#
+# provider options: "gemini" | "anthropic"
+# api_key:          your Gemini API key (if provider = gemini)
+#                   your Anthropic API key (if provider = anthropic)
+#
+# Gemini model examples:  "gemini-2.0-flash", "gemini-1.5-pro"
+# Anthropic model examples: "claude-sonnet-4-6", "claude-haiku-4-5-20251001"
+adk:
+  provider: "gemini"
+  api_key: ""                            # GEOTRACKER_ADK_API_KEY env var
+  strategy_model: "gemini-2.5-flash"
+  explainer_model: "gemini-2.5-flash"
+  recommender_model: "gemini-2.5-flash"
+  session_ttl_days: 30
