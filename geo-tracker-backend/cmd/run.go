@@ -18,7 +18,7 @@ import (
 var (
 	runBrands    []string
 	runProviders []string
-	dryRun       bool
+	dryRunGlobal bool
 	resumeRun    bool
 	verbose      bool
 	exitCode     bool
@@ -107,7 +107,7 @@ func runAllHandler(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	if !dryRun {
+	if !dryRunGlobal {
 		resultRepo.UpdateRunStatus(run.ID, "done", pipeResult.TotalCostUSD)
 	}
 
@@ -173,8 +173,9 @@ func setupPipeline(ctx context.Context, cmd *cobra.Command) (*adk.Pipeline, *db.
 		return nil, nil, nil, nil, fmt.Errorf("list active prompts: %w", err)
 	}
 
-	allProviders := providers.NewProviders(*cfg)
-	var enabledProviders []providers.Provider
+		allProviders := providers.NewProviders(*cfg, logger)
+		var enabledProviders []providers.Provider
+
 	if len(runProviders) > 0 {
 		for _, pName := range runProviders {
 			for _, p := range allProviders {
@@ -208,7 +209,7 @@ func setupPipeline(ctx context.Context, cmd *cobra.Command) (*adk.Pipeline, *db.
 		StartedAt:   time.Now(),
 	}
 
-	if !dryRun {
+	if !dryRunGlobal {
 		if runID > 0 {
 			run.ID = runID
 			// Load existing run data to prevent overwriting metadata if needed
@@ -248,6 +249,8 @@ func setupPipeline(ctx context.Context, cmd *cobra.Command) (*adk.Pipeline, *db.
 			}
 		}
 	}
+
+	cfg.App.DryRun = dryRunGlobal
 
 	explainerAgent, err := adk.NewExplainerAgent(ctx, cfg.ADK)
 	if err != nil {
@@ -346,7 +349,7 @@ func init() {
 	for _, c := range []*cobra.Command{runAllCmd, runIngestCmd, runIntelligenceCmd, runInsightCmd} {
 		c.Flags().StringSliceVar(&runBrands, "brands", nil, "override brands from config")
 		c.Flags().StringSliceVar(&runProviders, "providers", nil, "run only specific providers")
-		c.Flags().BoolVar(&dryRun, "dry-run", false, "probe but do not write to DB")
+		c.Flags().BoolVar(&dryRunGlobal, "dry-run", false, "probe but do not write to DB")
 		c.Flags().BoolVar(&resumeRun, "resume", false, "resume the latest incomplete run")
 		c.Flags().Uint64Var(&runID, "run-id", 0, "target a specific run ID")
 		c.Flags().BoolVar(&verbose, "verbose", false, "print raw responses")

@@ -80,16 +80,24 @@ func (r *ResultRepo) InsertResult(res *Result) error {
 	citedJSON, _ := json.Marshal(res.CitedURLs)
 
 	query := `INSERT INTO results (
-		run_id, prompt_id, sample_index, provider, model_version, brand, raw_response, brand_mentioned, 
+		id, run_id, prompt_id, sample_index, provider, model_version, brand, raw_response, brand_mentioned, 
 		sentiment, mention_count, recommendation_rank, competitors_mentioned, 
 		cited_urls, tokens_input, tokens_output, latency_ms, cost_usd, extraction_error
 	) VALUES (
-		:run_id, :prompt_id, :sample_index, :provider, :model_version, :brand, :raw_response, :brand_mentioned,
+		:id, :run_id, :prompt_id, :sample_index, :provider, :model_version, :brand, :raw_response, :brand_mentioned,
 		:sentiment, :mention_count, :recommendation_rank, :competitors_mentioned,
 		:cited_urls, :tokens_input, :tokens_output, :latency_ms, :cost_usd, :extraction_error
-	)`
+	) ON DUPLICATE KEY UPDATE 
+		brand_mentioned = VALUES(brand_mentioned),
+		sentiment = VALUES(sentiment),
+		mention_count = VALUES(mention_count),
+		recommendation_rank = VALUES(recommendation_rank),
+		competitors_mentioned = VALUES(competitors_mentioned),
+		cited_urls = VALUES(cited_urls),
+		extraction_error = VALUES(extraction_error)`
 
 	_, err := r.db.NamedExec(query, map[string]interface{}{
+		"id":                    res.ID,
 		"run_id":                res.RunID,
 		"prompt_id":             res.PromptID,
 		"sample_index":          res.SampleIndex,

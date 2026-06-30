@@ -13,6 +13,10 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+func (r *ResultRepo) GetDB() *sqlx.DB {
+	return r.db
+}
+
 func Connect(cfg config.DatabaseConfig) (*sqlx.DB, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&multiStatements=true",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name)

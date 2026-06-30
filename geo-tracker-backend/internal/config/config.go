@@ -11,6 +11,7 @@ import (
 type AppConfig struct {
 	Name     string `mapstructure:"name"`
 	LogLevel string `mapstructure:"log_level"`
+	DryRun   bool   `mapstructure:"dry_run"`
 }
 
 type DatabaseConfig struct {

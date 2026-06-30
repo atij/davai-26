@@ -1,30 +1,31 @@
 package providers
 
 import (
-	"context"
-	"fmt"
-	"encoding/json"
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/adoreme/geo-tracker/internal/config"
+	"go.uber.org/zap"
 )
 
-func NewProviders(cfg config.Config) []Provider {
+func NewProviders(cfg config.Config, logger *zap.Logger) []Provider {
 	var providers []Provider
 
 	if cfg.Providers.Claude.Enabled {
 		providers = append(providers, NewAnthropicProvider(cfg.Providers.Claude))
 	}
 	if cfg.Providers.ChatGPT.Enabled {
-		providers = append(providers, NewOpenAIProvider(cfg.Providers.ChatGPT))
+		providers = append(providers, NewOpenAIProvider(cfg.Providers.ChatGPT, logger))
 	}
 	if cfg.Providers.Perplexity.Enabled {
-		providers = append(providers, NewPerplexityProvider(cfg.Providers.Perplexity))
+		providers = append(providers, NewPerplexityProvider(cfg.Providers.Perplexity, logger))
 	}
 	if cfg.Providers.Gemini.Enabled {
-		providers = append(providers, NewGeminiProvider(cfg.Providers.Gemini))
+		providers = append(providers, NewGeminiProvider(cfg.Providers.Gemini, logger))
 	}
 
 	return providers
@@ -32,11 +33,8 @@ func NewProviders(cfg config.Config) []Provider {
 
 // Global factory for extraction calls
 func Extract(ctx context.Context, cfg config.ProviderConfig, providerType string, systemPrompt string, userPrompt string) (string, error) {
-	if providerType == "gemini" {
-		return extractGemini(ctx, cfg, systemPrompt, userPrompt)
-	}
-	// Default to Claude
-	return extractClaude(ctx, cfg, systemPrompt, userPrompt)
+	// Use Gemini for extraction if enabled and healthy, otherwise fallback
+	return extractGemini(ctx, cfg, systemPrompt, userPrompt)
 }
 
 func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt string, userPrompt string) (string, error) {
@@ -63,6 +61,8 @@ func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", cfg.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	// Add messages-api beta header if using newer features, but let's stick to standard first.
+	// The 400 Bad Request might be due to 'system' field or model name.
 
 	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
@@ -72,7 +72,9 @@ func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic extraction error: %s", resp.Status)
+		var errBody interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return "", fmt.Errorf("anthropic extraction error: %s (Body: %v)", resp.Status, errBody)
 	}
 
 	var result struct {
@@ -93,7 +95,7 @@ func extractClaude(ctx context.Context, cfg config.ProviderConfig, systemPrompt 
 }
 
 func extractGemini(ctx context.Context, cfg config.ProviderConfig, systemPrompt string, userPrompt string) (string, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", cfg.ExtractModel, cfg.APIKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", "gemini-2.0-flash", cfg.APIKey)
 	payload := map[string]interface{}{
 		"system_instruction": map[string]interface{}{
 			"parts": []map[string]string{

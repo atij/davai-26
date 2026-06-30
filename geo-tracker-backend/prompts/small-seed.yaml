@@ -1,0 +1,9 @@
+prompts:
+  - text: "Best lingerie for plus size women?"
+    category: purchase
+    notes: "Core discovery query"
+  - text: "Compare Adore Me vs Victoria's Secret"
+    category: comparison
+    notes: "Direct brand comparison"
+  - text: "Sustainable lingerie brands recommended for 2026?"
+    category: discovery

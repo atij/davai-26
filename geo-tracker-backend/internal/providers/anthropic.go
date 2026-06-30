@@ -44,18 +44,8 @@ func (p *anthropicProvider) Probe(ctx context.Context, prompt string) (ProbeResp
 		},
 		"tools": []map[string]interface{}{
 			{
-				"name":        "google_search",
-				"description": "A tool that allows you to search Google for real-time information and brand visibility.",
-				"input_schema": map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"query": map[string]interface{}{
-							"type":        "string",
-							"description": "The search query to look up on Google.",
-						},
-					},
-					"required": []string{"query"},
-				},
+				"type": "web_search_20250305",
+				"name": "web_search",
 			},
 		},
 	}
@@ -101,7 +91,16 @@ func (p *anthropicProvider) Probe(ctx context.Context, prompt string) (ProbeResp
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 		Content []struct {
-			Text string `json:"text"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Input     any    `json:"input"`
+			Citations []struct {
+				Citation struct {
+					URL string `json:"url"`
+				} `json:"citation"`
+			} `json:"citations"`
 		} `json:"content"`
 	}
 
@@ -113,8 +112,26 @@ func (p *anthropicProvider) Probe(ctx context.Context, prompt string) (ProbeResp
 		return ProbeResponse{}, fmt.Errorf("empty response from anthropic")
 	}
 
+	var rawText string
+	var citedURLs []string
+	for _, block := range result.Content {
+		if block.Type == "text" {
+			rawText += block.Text
+			for _, c := range block.Citations {
+				if c.Citation.URL != "" {
+					citedURLs = append(citedURLs, c.Citation.URL)
+				}
+			}
+		} else if block.Type == "tool_use" {
+			// Log tool usage at debug level
+			// We don't have a logger injected here, but we follow the principle of not info-logging raw text
+			// Since this is internal/providers, we just process it.
+		}
+	}
+
 	return ProbeResponse{
-		RawText:      result.Content[0].Text,
+		RawText:      rawText,
+		CitedURLs:    citedURLs,
 		TokensInput:  result.Usage.InputTokens,
 		TokensOutput: result.Usage.OutputTokens,
 		LatencyMS:    latency,

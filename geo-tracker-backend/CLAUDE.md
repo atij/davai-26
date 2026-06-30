@@ -211,6 +211,8 @@ The probe call has **no system prompt** — this measures organic AI behavior.
 The extraction call is a separate Claude Haiku call with a strict system prompt.
 Never combine them into one call.
 
+**Note on Search/Grounding:** "No system prompt" on the probe call refers to *not directing the model's search behavior* — it does NOT mean tools/search must be disabled. Native server-side web search/grounding tools are enabled for all providers (Anthropic, OpenAI Responses API, Gemini Native API, Perplexity) to mirror chat UI behavior and ensure grounded responses with citations.
+
 ---
 
 ## Extraction agent
